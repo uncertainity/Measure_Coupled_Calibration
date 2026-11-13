@@ -1,0 +1,5 @@
+method,parameter_rows,scored_rows,mean_one_step_nll,median_one_step_nll,total_one_step_nll
+garch_mcmc,14,13,-2.772794698,-4.338097713,-36.04633107
+pmcmc,14,13,-3.318429055,-3.686873566,-43.13957771
+joint_eape,23,22,-3.052210148,-3.319595844,-67.14862326
+joint_mape,23,22,15544.82885,-3.254311359,341986.2347

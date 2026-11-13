@@ -1,0 +1,103 @@
+Heston Q-space option-pricing error report
+==========================================
+
+Common contracts across all methods: 5236
+
+Strict common-contract comparison
+         method  count  dates       mae  median_ae      rmse     max_ae
+baseline_single   5236     59  9.798818   5.837300 16.626302 129.046000
+ baseline_multi   5236     59  7.294025   2.458610 15.449889 129.012000
+     joint_eape   5236     59 12.140311   2.513725 45.226039 557.420000
+     joint_mape   5236     59  5.899590   1.580330 13.271177 124.065000
+
+baseline_single
+===============
+
+Overall
+method       baseline_single
+count                   5463
+dates                     62
+mae                 9.915407
+median_ae           5.944310
+rmse               16.882086
+max_ae            129.046000
+
+Moneyness metrics
+         method moneyness  count  dates       mae  median_ae      rmse     max_ae
+baseline_single       ITM   1630     62 16.867630   9.831645 26.672925 129.046000
+baseline_single       ATM   1140     62 10.999630   8.983660 13.846647  76.432000
+baseline_single       OTM   2693     62  5.248442   2.640360  8.147234  33.156800
+
+Daily metrics summary
+average_daily_mae     9.898241
+median_daily_mae      9.347236
+average_daily_rmse   15.770194
+
+baseline_multi
+==============
+
+Overall
+method       baseline_multi
+count                  5336
+dates                    60
+mae                7.395318
+median_ae          2.460355
+rmse              15.842057
+max_ae           129.012000
+
+Moneyness metrics
+        method moneyness  count  dates       mae  median_ae      rmse     max_ae
+baseline_multi       ITM   1595     60 16.262439   6.812010 27.051107 129.012000
+baseline_multi       ATM   1108     60  5.718087   3.692640  9.431328  86.613700
+baseline_multi       OTM   2633     60  2.729657   1.108570  5.282107  43.825100
+
+Daily metrics summary
+average_daily_mae     7.149936
+median_daily_mae      6.882982
+average_daily_rmse   13.652761
+
+joint_eape
+==========
+
+Overall
+method       joint_eape
+count              6381
+dates                61
+mae           14.796418
+median_ae      3.628470
+rmse          43.563726
+max_ae       557.420000
+
+Moneyness metrics
+    method moneyness  count  dates       mae  median_ae      rmse     max_ae
+joint_eape       ITM   2607     61 22.864164  13.254500 42.977936 484.552000
+joint_eape       ATM   1128     61 12.299516   3.597980 45.216433 557.420000
+joint_eape       OTM   2646     61  7.912024   0.889880 43.418840 553.159000
+
+Daily metrics summary
+average_daily_mae    14.756811
+median_daily_mae     10.098794
+average_daily_rmse   23.997961
+
+joint_mape
+==========
+
+Overall
+method       joint_mape
+count              6381
+dates                61
+mae            9.539398
+median_ae      2.352320
+rmse          18.905138
+max_ae       127.156000
+
+Moneyness metrics
+    method moneyness  count  dates       mae  median_ae      rmse     max_ae
+joint_mape       ITM   2607     61 19.304858  11.520500 28.789520 127.156000
+joint_mape       ATM   1128     61  4.602521   2.327905  7.879481  68.376500
+joint_mape       OTM   2646     61  2.022483   0.593376  4.337715  37.135700
+
+Daily metrics summary
+average_daily_mae     9.518423
+median_daily_mae      8.770841
+average_daily_rmse   17.747006

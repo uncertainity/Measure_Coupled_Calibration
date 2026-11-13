@@ -1,0 +1,1652 @@
+\documentclass[sigconf,anonymous,review]{acmart}
+\usepackage{amsmath}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{algpseudocode}
+\usepackage{float}
+\usepackage{stfloats}
+
+% Conservative float-spacing adjustments. These keep the ACM class,
+% typography, margins, and caption style unchanged while reducing the
+% whitespace around tables, figures, and algorithm floats.
+\setlength{\textfloatsep}{5pt plus 1pt minus 1pt}
+\setlength{\floatsep}{4pt plus 1pt minus 1pt}
+\setlength{\intextsep}{5pt plus 1pt minus 1pt}
+\setlength{\dbltextfloatsep}{5pt plus 1pt minus 1pt}
+\setlength{\dblfloatsep}{4pt plus 1pt minus 1pt}
+
+\AtBeginDocument{\providecommand\BibTeX{{Bib\TeX}}}
+\setcopyright{none}
+\settopmatter{printacmref=true}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\acmConference[ICAIF '26]{7th ACM International Conference on AI in Finance}{2026}{TBD}
+\acmBooktitle{Proceedings of the 7th ACM International Conference on AI in Finance (ICAIF '26)}
+\acmDOI{}
+\acmISBN{}
+
+\newcommand{\Pmeasure}{\mathbb{P}}
+\newcommand{\Qmeasure}{\mathbb{Q}}
+\newcommand{\placeholder}[1]{\textbf{[PLACEHOLDER: #1]}}
+
+\begin{document}
+
+\title{Online Measure-Coupled Calibration: Joint Inference for Stochastic Volatility from Returns and Option Surfaces}
+
+\begin{abstract}
+Stochastic-volatility models are commonly calibrated separately to
+historical returns and option prices, even though their \(\mathbb{P}\)- and \(\mathbb{Q}\)-dynamics are structurally linked. This separation can produce estimates that fit each data source but are inconsistent across measures.
+We introduce Measure-Coupled Calibration (MCC), a sequential framework
+for jointly estimating stochastic volatility models from returns under
+the physical measure \(\mathbb{P}\) and option prices under the
+risk-neutral measure \(\mathbb{Q}\). Rather than calibrating the two
+representations independently, MCC preserves their structural
+change-of-measure relation. 
+
+MCC uses an augmented particle filter to track latent variance,
+physical-measure parameters, and change-of-measure parameters over
+time. Particles are propagated sequentially, mapped from
+\(\mathbb{P}\) to \(\mathbb{Q}\), and weighted using the return
+likelihood and option-surface fit. We instantiate the framework with
+the Heston and Bates models.
+
+% [TODO] Are our results actually better?
+We evaluate the framework using Heston on controlled synthetic markets and NSE equity options, and Bates on hourly cryptocurrency option data. The results show that combining information across the two measures improves parameter consistency and latent-state recovery relative to single-measure calibration, while remaining competitive with strong calibration baselines on real-world option-pricing tasks. To support reproducibility and further evaluation, we provide a complete C++ implementation of the calibration framework (\href{https://anonymous.4open.science/r/Measure_Coupled_Calibration/}{MCC-Code}) together with a QuantLib-based synthetic market generator for the Heston model.
+
+% [TODO] Add anonymous github link when code is finalized
+
+\end{abstract}
+
+% [TODO] add onto these
+\keywords{stochastic volatility, Heston model, Bayesian calibration, particle filtering, QuantLib, option pricing}
+\ccsdesc[500]{Computing methodologies~Modeling and simulation}
+\ccsdesc[300]{Applied computing~Economics}
+
+\maketitle
+
+\section{Introduction}
+% [TODO] The argument of volatility risk premium is only for heston, it changes with different Models
+Stochastic volatility models are widely used to describe asset-return dynamics and price derivative securities. Historical returns evolve under the physical measure $\mathbb{P}$, whereas derivative prices are computed under an equivalent risk-neutral measure $\mathbb{Q}$, under which the discounted asset price is a martingale. The two parameterizations are linked through the market prices of risk rather than being independent \cite{heston1993,bates1996,shreve2004}.
+
+% [TODO] Why is it carried out seperately
+Despite this connection, calibration under the two measures is usually carried out separately. Physical-measure parameters are inferred from historical returns using likelihood-based, Bayesian, or time-series methods, whereas risk-neutral parameters are obtained by fitting observed option prices or implied volatilities \cite{fruehwirth2008,stramer2011bayesian,cui2017full,mrazek2017calibration}. This separation is convenient, but it does not enforce the restrictions imposed by the change of measure; parameter estimates may therefore fit each data source in isolation while remaining incompatible across measures \cite{chernov2000joint,pan2002jump}.
+
+The problem is particularly noticeable for stochastic volatility models such as Heston and Bates. Different parameter combinations can generate very similar option-price surfaces, making the inverse calibration problem practically ill-conditioned \cite{gatheral2006,cui2017full,mrazek2017calibration}. Option prices may therefore constrain the risk-neutral dynamics without uniquely determining the corresponding physical dynamics or risk premia \cite{chernov2000joint,forbes2007inference,hurn2015estimating}. A good fit under $\mathbb{Q}$ does not necessarily imply a coherent model under $\mathbb{P}$.
+
+Joint estimation provides a natural way to reduce this ambiguity: returns constrain the physical dynamics, while option prices constrain the associated risk-neutral representation through the change-of-measure relation. Existing approaches include moment-based, likelihood-based, and Bayesian simulation methods applied to fixed observation samples \cite{chernov2000joint,pan2002jump,forbes2007inference,hurn2015estimating}. In practice, calibration is repeated as new returns and option surfaces arrive, while latent volatility and fitted parameters may evolve over time \cite{lindstrom2008sequential}. Re-solving the complete batch problem at every observation can therefore be computationally expensive and can discard useful temporal information.
+
+% [TODO] beyond heston and bates
+% [TODO] not solely volatility risk premium, Bates has another one... and generalize this further if possible (i.e. like a common name for transformations, we can even define this if needed)
+This paper introduces Measure-Coupled Calibration (MCC), an online framework for jointly estimating stochastic-volatility models across the physical and risk-neutral measures. MCC sequentially tracks latent
+variance, physical parameters, and change-of-measure parameters, using returns to constrain the real-world dynamics and option surfaces
+to constrain their structurally linked risk-neutral representation. Option-based initialisation and adaptive particle recovery improve stability under changing market conditions. We evaluate MCC on synthetic Heston markets, NSE equity options, and hourly cryptocurrency options using the Bates model. MCC improves cross-measure consistency
+and latent-state recovery relative to single-measure estimators while remaining competitive on real-market calibration and return prediction.
+Our main contributions are as follows:
+\begin{itemize} 
+    \item We formulate Heston and Bates calibration as an online cross-measure inference problem that jointly tracks latent variance, physical-measure parameters, the volatility risk premium, and, for Bates, the jump parameters. 
+    
+    \item We develop an augmented particle filter that retains information from previous observations, tracks parameter uncertainty over time, and
+    combines physical-measure return likelihoods with risk-neutral
+    option-surface information through the structural $\mathbb{P}$-to-$\mathbb{Q}$ transformation.
+    
+    \item We evaluate MCC using Heston on synthetic markets and NSE equity options, and Bates on hourly cryptocurrency options, with comparisons against physical-only, risk-neutral-only, and rolling multi-surface calibration baselines. 
+    
+    \item We release a C++ implementation together with a QuantLib-based synthetic market generator for reproducible evaluation of Heston and Bates calibration methods. \end{itemize}
+% \begin{itemize}
+%     \item We formulate Heston and Bates calibration as online
+%     cross-measure inference over latent variance, physical parameters,
+%     risk premia, and jump parameters.
+
+%     \item We develop an augmented particle filter that combines
+%     physical-measure return likelihoods with risk-neutral option-surface
+%     information.
+
+%     \item We evaluate Heston on synthetic and NSE equity markets, and
+%     Bates on hourly cryptocurrency options, against single- and
+%     multi-surface calibration baselines.
+
+%     \item We release a C++ implementation and a QuantLib-based synthetic market generator.
+% \end{itemize}
+
+% [TODO Ahmik] - I have not checked related work
+
+\section{Related Work}
+\label{sec:related_work}
+Estimation of stochastic volatility models is commonly separated by probability measure. Under \(\mathbb{P}\), latent variance and model
+parameters are inferred from returns using likelihood-based, Bayesian, or state-space methods \cite{fruehwirth2008,andrieu2010particle,stramer2011bayesian}; under \(\mathbb{Q}\), parameters are calibrated to option prices or implied
+volatilities \cite{cui2017full,mrazek2017calibration}. These procedures fit their respective data sources but do not enforce cross-measure consistency.
+
+Joint estimators have combined spot and option observations to infer physical and risk-neutral parameters, volatility and jump-risk premia,
+and latent variance
+\cite{chernov2000joint,pan2002jump,forbes2007inference,
+aihara2006filtering,hurn2015estimating}. These methods primarily perform batch inference over fixed samples with static structural parameters.
+Separately, Lindstr\"om et al.\ \cite{lindstrom2008sequential} used nonlinear Kalman filters to track time-varying Heston and Bates parameters sequentially, but relied mainly on risk-neutral option data.
+
+MCC combines these directions. It maintains an augmented particle population over latent variance, physical parameters, and
+change-of-measure parameters, assimilates returns and option surfaces within the same sequential update, and enforces the
+\(\mathbb{P}\)-to-\(\mathbb{Q}\) map for every particle. Unlike batch joint estimators, MCC updates online and permits controlled parameter
+evolution; unlike option-only sequential calibration, it uses returns to constrain the cross-measure decomposition. Laplace initialisation places particles in locally plausible regions of the ill-conditioned
+surface-calibration problem.
+
+% Estimation of stochastic volatility models has traditionally been separated by probability measure. Under the physical measure $\mathbb{P}$, latent volatility and model parameters are commonly estimated from return time series using likelihood-based, Bayesian, and state-space methods
+% \cite{fruehwirth2008,andrieu2010particle,stramer2011bayesian}.
+% Under the risk-neutral measure $\mathbb{Q}$, calibration is typically formulated as a nonlinear inverse problem that minimizes the discrepancy between observed and model-implied option prices or volatilities \cite{cui2017full,mrazek2017calibration}. These procedures
+% can accurately reproduce their respective data sources, but do not by themselves enforce consistency between the physical and risk-neutral parameterizations.
+
+% Several studies have therefore combined spot and option information. Chernov and Ghysels \cite{chernov2000joint} developed a unified estimation framework using the underlying asset together with option observations. Pan \cite{pan2002jump} used an integrated time-series
+% model to infer volatility and jump-risk premia from index and option prices. Forbes et al.\ \cite{forbes2007inference} formulated Bayesian joint inference using a nonlinear state-space model and MCMC, while Aihara and Bagchi \cite{aihara2006filtering} studied filtering of the
+% latent Heston variance and identification of the market price of volatility risk. More closely related to our setting, Hurn et al.\ \cite{hurn2015estimating} used a particle-filter likelihood to estimate physical- and risk-neutral-measure parameters, including volatility and jump-risk premia. These approaches primarily perform batch inference over a fixed observation sample and estimate a static set of structural parameters.
+
+% A separate line of work considers sequential option calibration. Lindstr\"om et al.\ \cite{lindstrom2008sequential} represented the
+% option-calibration problem as a state-space model and introduced stochastic parameter dynamics to track time-varying Heston and Bates parameters using nonlinear Kalman filters. This provides temporal regularization, but is primarily driven by risk-neutral option observations.
+
+% Measure-Coupled Calibration differs in its combination of these two directions. MCC maintains a single augmented particle population over latent volatility, physical-measure parameters, and change-of-measure parameters. Returns and option surfaces are assimilated within the same
+% sequential update, while the structural $\mathbb{P}$-to-$\mathbb{Q}$ map is enforced for every particle. Unlike batch joint estimators, MCC updates as new observations arrive and permits controlled parameter evolution. Unlike option-only sequential calibration, it uses the physical return likelihood to constrain the cross-measure decomposition. Laplace-based initialisation is used to place particles
+% within locally plausible regions of the otherwise ill-conditioned surface-calibration problem.
+% \section{Related Work}
+% Physical-measure estimation has long used moment methods, volatility proxies, and Bayesian state-space inference. Efficient method-of-moments estimators target informative statistics \cite{gallant1995}; GARCH-assisted MCMC supplies a pragmatic variance proxy \cite{fruhwirth2008}; and particle MCMC integrates latent-path uncertainty at substantially higher computational cost \cite{andrieu2010,stramer2011}. Under $\Qmeasure$, Heston's transform enables semi-analytical option valuation, motivating nonlinear least-squares and simplex calibration \cite{nelder1965,cui2017,mrazek2017}. Neural surrogates can accelerate this map but do not remove measure inconsistency or identifiability concerns.
+
+% The measures are linked through market-price-of-risk restrictions \cite{aihara2006,shreve2004}, yet most implementations still expose separate return and surface workflows. QuantLib provides validated financial primitives and pricing engines \cite{quantlib}, but not an end-to-end joint inference and evaluation protocol. Our focus is therefore complementary: a transparent sequential inference method and a systems layer that makes initialization, filtering, pricing, and evaluation reproducible across assets.
+
+% Three distinctions position this work relative to those threads. First, the objective is not merely faster surface optimization: return and option evidence are consumed within the same sequential state. Second, the particle population represents parameter uncertainty as well as latent variance, whereas a rolling optimizer returns a single local solution. Third, the framework treats evaluation as a first-class module. Parameter recovery, predictive likelihood, and option error answer different questions and can disagree; our experiments make those disagreements visible.
+
+
+\section{Background and Problem Formulation}
+\label{sec:background}
+
+\subsection{Heston Dynamics Under the Physical Measure}
+\label{sec:heston_physical}
+
+Let \(S_t\) denote the price of the underlying asset and let \(V_t\) denote its latent instantaneous variance. Under the physical measure \(\mathbb{P}\), the Heston stochastic volatility model is given by \cite{heston1993}
+%
+\begin{align}
+\frac{dS_t}{S_t}
+&=
+\mu\,dt
++
+\sqrt{V_t}\,dW_t^{S,\mathbb{P}},
+\label{eq:heston_p_asset}
+\\
+dV_t
+&=
+\kappa_{\mathbb{P}}
+\left(
+\theta_{\mathbb{P}}-V_t
+\right)dt
++
+\xi\sqrt{V_t}\,dW_t^{V,\mathbb{P}}.
+\label{eq:heston_p_variance}
+\end{align}
+%
+where
+%
+\begin{equation}
+dW_t^{S,\mathbb{P}}
+dW_t^{V,\mathbb{P}}
+=
+\rho\,dt.
+\label{eq:heston_correlation}
+\end{equation}
+%
+Here, \(\mu\) is the physical drift of the asset, \(\kappa_{\mathbb{P}}>0\) is the mean-reversion rate of the variance process, \(\theta_{\mathbb{P}}>0\) is its long-run mean, \(\xi>0\) is the volatility-of-variance parameter, and \(\rho\in[-1,1]\) controls the instantaneous correlation between return and variance innovations. The parameter vector under the physical measure is denoted by
+%
+\begin{equation}
+\boldsymbol{\vartheta}_{\mathbb{P}}
+=
+\left(
+\mu,
+\kappa_{\mathbb{P}},
+\theta_{\mathbb{P}},
+\xi,
+\rho
+\right).
+\end{equation}
+
+For a discrete interval of length \(\Delta t\), the log return
+%
+\begin{equation}
+R_t
+=
+\log
+\left(
+\frac{S_t}{S_{t-\Delta t}}
+\right)
+\end{equation}
+%
+can be approximated using an Euler discretization as
+%
+\begin{equation}
+R_t
+\approx
+\left(
+\mu-\frac{1}{2}V_{t-\Delta t}
+\right)\Delta t
++
+\sqrt{V_{t-\Delta t}\Delta t}\,
+\varepsilon_t^{S},
+\qquad
+\varepsilon_t^{S}\sim\mathcal{N}(0,1).
+\label{eq:return_observation}
+\end{equation}
+%
+Historical log returns therefore provide information about the latent variance path and the physical-measure dynamics. However, because \(V_t\) is unobserved, the likelihood of the observed returns requires either explicit latent-state estimation or integration over the latent variance process.
+
+\subsection{Risk-Neutral Dynamics and Option Pricing}
+\label{sec:heston_risk_neutral}
+% [TODO] IS opotion a mistake
+Derivative option prices are computed under an equivalent risk-neutral measure \(\mathbb{Q}\), under which the discounted asset price is a martingale \cite{heston1993,shreve2004}. The Heston dynamics become
+%
+\begin{align}
+\frac{dS_t}{S_t}
+&=
+(r_t^{f}-q_t)dt
++
+\sqrt{V_t}\,dW_t^{S,\mathbb{Q}},
+\label{eq:heston_q_asset}
+\\
+dV_t
+&=
+\kappa_{\mathbb{Q}}
+\left(
+\theta_{\mathbb{Q}}-V_t
+\right)dt
++
+\xi\sqrt{V_t}\,dW_t^{V,\mathbb{Q}}.
+\label{eq:heston_q_variance}
+\end{align}
+%
+with
+%
+\begin{equation}
+dW_t^{S,\mathbb{Q}}
+dW_t^{V,\mathbb{Q}}
+=
+\rho\,dt.
+\end{equation}
+%
+Here, \(r_t^{f}\) is the risk-free interest rate. The current latent variance \(V_t\) is shared by the physical and risk-neutral representations, but its future dynamics are governed by the risk-neutral parameters \(\kappa_{\mathbb{Q}}\) and \(\theta_{\mathbb{Q}}\).
+
+For a European call option with strike \(K\) and time to maturity \(\tau\), the arbitrage-free price is
+%
+\begin{equation}
+C_t(K,\tau)
+=
+e^{-r_t^{f}\tau}
+\mathbb{E}^{\mathbb{Q}}
+\left[
+\left(
+S_{t+\tau}-K
+\right)^{+}
+\mid
+\mathcal{F}_t
+\right].
+\label{eq:risk_neutral_price}
+\end{equation}
+%
+The Heston model admits a semi-analytical characteristic-function representation for evaluating~\eqref{eq:risk_neutral_price} \cite{heston1993}. In our implementation, option prices are computed using the corresponding QuantLib pricing engines \cite{quantlib}.
+
+At time \(t\), we denote the observed option panel by
+%
+\begin{equation}
+\mathcal{O}_t
+=
+\left\{
+\left(
+K_{t,j},
+\tau_{t,j},
+C_{t,j}^{\mathrm{mkt}}
+\right)
+\right\}_{j=1}^{M_t},
+\end{equation}
+%
+where \(M_t\) is the number of available option contracts. The option panel constrains the risk-neutral parameters through the pricing map
+%
+\begin{equation}
+C_{t,j}^{\mathrm{model}}
+=
+\mathcal{H}
+\left(
+S_t,
+V_t,
+K_{t,j},
+\tau_{t,j},
+r_t^{f},
+q_t;
+\boldsymbol{\vartheta}_{\mathbb{Q}}
+\right),
+\end{equation}
+%
+where \(\mathcal{H}\) denotes the Heston pricing operator.
+
+\subsection{Linking the Physical and Risk-Neutral Measures}
+\label{sec:pq_transformation}
+
+The physical and risk-neutral variance processes are related through the volatility risk premium \cite{aihara2006filtering,forbes2007inference,hurn2015estimating}. To avoid confusion with the jump intensity introduced later, we denote the volatility risk-premium parameter by \(\lambda_V\).
+
+Under the parameterization used in this work,
+%
+\begin{align}
+\kappa_{\mathbb{Q}}
+&=
+\kappa_{\mathbb{P}}+\lambda_V,
+\label{eq:kappa_pq}
+\\
+\kappa_{\mathbb{Q}}\theta_{\mathbb{Q}}
+&=
+\kappa_{\mathbb{P}}\theta_{\mathbb{P}}.
+\label{eq:mean_pq}
+\end{align}
+%
+Consequently,
+%
+\begin{equation}
+\theta_{\mathbb{Q}}
+=
+\frac{
+\kappa_{\mathbb{P}}\theta_{\mathbb{P}}
+}{
+\kappa_{\mathbb{P}}+\lambda_V
+}.
+\label{eq:theta_pq}
+\end{equation}
+%
+We define the physical-to-risk-neutral transformation
+%
+\begin{equation}
+T:
+\left(
+\kappa_{\mathbb{P}},
+\theta_{\mathbb{P}},
+\lambda_V
+\right)
+\mapsto
+\left(
+\kappa_{\mathbb{Q}},
+\theta_{\mathbb{Q}}
+\right)
+=
+\left(
+\kappa_{\mathbb{P}}+\lambda_V,
+\frac{
+\kappa_{\mathbb{P}}\theta_{\mathbb{P}}
+}{
+\kappa_{\mathbb{P}}+\lambda_V
+}
+\right).
+\label{eq:pq_map}
+\end{equation}
+
+This transformation provides the structural connection between the two data sources. Historical returns constrain the physical-measure parameters and latent variance, whereas option prices constrain the corresponding risk-neutral parameters. The volatility risk premium controls the discrepancy between these two representations.
+
+In particular, \(\lambda_V\) does not enter the physical return likelihood directly. It influences the observed option prices only through the transformed risk-neutral parameters:
+%
+\begin{equation}
+\lambda_V
+\longrightarrow
+\left(
+\kappa_{\mathbb{Q}},
+\theta_{\mathbb{Q}}
+\right)
+\longrightarrow
+C_t(K,\tau).
+\end{equation}
+%
+Its estimation therefore depends on combining information from both measures.
+
+\subsection{Bates Jump Diffusion Extension}
+\label{sec:bates}
+
+The Bates model extends the Heston model by introducing discontinuous jumps in the underlying asset price \cite{bates1996}. Under a measure \(\mathbb{M}\in\{\mathbb{P},\mathbb{Q}\}\), the asset dynamics may be written as
+%
+\begin{equation}
+\frac{dS_t}{S_{t^-}}
+=
+\left(
+b_{\mathbb{M}}
+-
+\lambda_J^{\mathbb{M}}
+\overline{k}_J^{\mathbb{M}}
+\right)dt
++
+\sqrt{V_t}\,dW_t^{S,\mathbb{M}}
++
+\left(
+e^{J_t^{\mathbb{M}}}-1
+\right)dN_t^{\mathbb{M}},
+\label{eq:bates_asset}
+\end{equation}
+%
+where \(N_t^{\mathbb{M}}\) is a Poisson process with intensity \(\lambda_J^{\mathbb{M}}\), and
+%
+\begin{equation}
+J_t^{\mathbb{M}}
+\sim
+\mathcal{N}
+\left(
+\mu_J^{\mathbb{M}},
+\left(\sigma_J^{\mathbb{M}}\right)^2
+\right)
+\end{equation}
+%
+is the logarithmic jump size. The compensator is
+%
+\begin{equation}
+\overline{k}_J^{\mathbb{M}}
+=
+\mathbb{E}^{\mathbb{M}}
+\left[
+e^{J_t^{\mathbb{M}}}-1
+\right]
+=
+\exp
+\left(
+\mu_J^{\mathbb{M}}
++
+\frac{1}{2}
+\left(\sigma_J^{\mathbb{M}}\right)^2
+\right)
+-1.
+\end{equation}
+%
+Under the physical measure, \(b_{\mathbb{P}}=\mu\), whereas under the risk-neutral measure,
+$
+b_{\mathbb{Q}} = r_t^{f} - q_{t}.$
+The variance process retains the square-root diffusion in~\eqref{eq:heston_p_variance} and~\eqref{eq:heston_q_variance}. Accordingly, the same physical-to-risk-neutral mapping in~\eqref{eq:pq_map} is used for the variance mean-reversion parameters, while the Bates parameter vector additionally contains the jump intensity, average jump size, and jump-size volatility:
+$ \boldsymbol{\psi}_J =
+\left(
+\lambda_J,
+\mu_J,
+\sigma_J
+\right).
+$
+We reserve \(\lambda_V\) for the volatility risk premium and \(\lambda_J\) for the jump intensity throughout the paper.
+The Bates pricing operator is denoted by
+$
+\mathcal{B}
+\left(
+S_t,
+V_t,
+K,
+\tau,
+r_t^{f},
+\boldsymbol{\vartheta}_{\mathbb{Q}},
+\boldsymbol{\psi}_J
+\right).
+$
+The proposed inference framework is otherwise unchanged: the latent variance and physical parameters are propagated sequentially, transformed into their risk-neutral representation, and evaluated against the observed option panel.
+
+\subsection{Cross-Measure Non-Identifiability}
+\label{sec:nonidentifiability}
+
+Stochastic volatility calibration exhibits two related forms of non-identifiability. First, even within the risk-neutral measure, different parameter combinations may produce very similar option surfaces. This practical ill-conditioning is well documented for Heston-type models and makes independent surface calibration sensitive to initialization, observation noise, and the available range of strikes and maturities \cite{gatheral2006,cui2017full,mrazek2017calibration}.
+
+Second, the transformation in~\eqref{eq:pq_map} creates an additional structural ambiguity. Option prices depend on
+$\left(
+\kappa_{\mathbb{P}},
+\theta_{\mathbb{P}},
+\lambda_V
+\right)$ only through the two risk-neutral combinations
+ $\left(
+\kappa_{\mathbb{Q}},
+\theta_{\mathbb{Q}}
+\right).$
+Consequently, even if the option surface identified the risk-neutral pair exactly, it would not uniquely determine its physical-measure decomposition.
+
+For any admissible value of \(\lambda_V\), a fixed risk-neutral pair \(\left(\kappa_{\mathbb{Q}},\theta_{\mathbb{Q}}\right)\) can be represented by
+%
+\begin{equation}
+\kappa_{\mathbb{P}}
+=
+\kappa_{\mathbb{Q}}-\lambda_V,
+\qquad
+\theta_{\mathbb{P}}
+=
+\frac{\kappa_{\mathbb{Q}}\theta_{\mathbb{Q}}}
+{\kappa_{\mathbb{Q}}-\lambda_V}.
+\label{eq:inverse_pq}
+\end{equation}
+%
+Every admissible triplet generated by \eqref{eq:inverse_pq} produces the same risk-neutral parameters and hence the same model option prices.
+
+Therefore, including \(\kappa_{\mathbb{P}}\), \(\theta_{\mathbb{P}}\), and \(\lambda_V\) inside an option-surface optimizer does not make them separately identifiable. The optimizer receives risk-neutral pricing information, not direct physical-measure information. A stronger numerical optimizer may locate the risk-neutral optimum more accurately, but it cannot remove this structural ridge.
+
+Historical returns provide the complementary information required to constrain the physical dynamics. Joint inference combines physical-measure information from returns with
+risk-neutral information from option prices.
+The purpose of the joint framework is therefore not to claim that a single option surface uniquely identifies all parameters, but to reduce the set of observationally equivalent cross-measure configurations by assimilating both data sources.
+
+\subsection{Sequential Inference Formulation}
+
+We formulate calibration as an augmented state-space filtering problem
+\cite{gordon1993bootstrap,kitagawa1996monte}. At time \(t\), the latent
+state is
+\(
+X_t=(V_t,\boldsymbol{\vartheta}_{P,t},
+\lambda_{V,t},\boldsymbol{\psi}_{J,t})
+\),
+where \(\boldsymbol{\psi}_{J,t}\) is omitted for Heston, and the
+observations are \(Y_t=(R_t,\mathcal O_t)\). An augmented particle
+filter represents the filtering distribution as
+\begin{equation}
+p(X_t\mid Y_{1:t})
+\approx
+\sum_{i=1}^{N} w_t^{(i)}\delta_{X_t^{(i)}}.
+\end{equation}
+Particles propagate latent variance under the physical dynamics and
+allow model parameters to evolve stochastically. Their weights combine
+the physical-measure return likelihood with the risk-neutral
+option-surface fit after applying the \(\mathbb P\)-to-\(\mathbb Q\)
+transformation. Section~\ref{sec:mcc} gives the complete update.
+
+% Because latent volatility and calibrated parameters may evolve as new returns and option surfaces arrive, we formulate joint calibration as a sequential state-space inference problem \cite{gordon1993bootstrap,kitagawa1996monte}. Let
+% \begin{equation}
+% X_t =
+% \left(
+% V_t,\boldsymbol{\vartheta}_{P,t},
+% \lambda_{V,t},\boldsymbol{\psi}_{J,t}
+% \right)
+% \end{equation}
+% denote the augmented latent state, where the jump parameters
+% $\boldsymbol{\psi}_{J,t}$ are omitted for the Heston model. The state
+% evolves according to
+% \begin{equation}
+% X_t \sim p(X_t\mid X_{t-1}),
+% \end{equation}
+% which combines the physical transition of latent variance with
+% stochastic evolution of the model parameters.
+
+% At time $t$, the observations are $ Y_t=(R_t,\mathcal O_t),$
+% and the objective is to approximate the filtering distribution
+% $p(X_t\mid Y_{1:t})$.
+% The two observation channels contribute complementary information: returns constrain the latent volatility and physical-measure dynamics,
+% while the option panel constrains the corresponding risk-neutral representation through the transformation $T$. We therefore use the
+% cross-measure observation score
+% \begin{equation}
+% G_t(X_t)
+% =
+% p_{\mathbb P}(R_t\mid X_t)
+% \exp\left\{-\beta\mathcal L_{\mathbb Q}(\mathcal O_t;X_t)\right\},
+% \end{equation}
+% where $\mathcal L_{\mathbb Q}$ is the option-surface loss and
+% $\beta>0$ controls its contribution. Section~\ref{sec:mcc} introduces the particle approximation used to perform this sequential inference.
+
+% \subsection{Sequential Cross-Measure Calibration}
+% \label{sec:online_problem}
+
+% Market conditions and calibrated stochastic volatility parameters can change over time. Independent daily calibration treats each option panel as a separate inverse problem and may jump between different parameter combinations that produce similar prices. Conversely, repeatedly applying a full batch estimator to an expanding data window can be computationally expensive, particularly for hourly option data and the Bates model.
+
+% We therefore formulate calibration as a sequential inference problem. Let
+% %
+% \begin{equation}
+% X_t
+% =
+% \left(
+% V_t,
+% \boldsymbol{\vartheta}_{\mathbb{P},t},
+% \lambda_{V,t},
+% \boldsymbol{\psi}_{J,t}
+% \right)
+% \label{eq:augmented_state}
+% \end{equation}
+% %
+% denote the augmented state at time \(t\), where the jump parameters \(\boldsymbol{\psi}_{J,t}\) are omitted for the Heston model. The state evolves according to
+% %
+% \begin{equation}
+% X_t
+% \sim
+% p
+% \left(
+% X_t
+% \mid
+% X_{t-1}
+% \right),
+% \label{eq:augmented_transition}
+% \end{equation}
+% %
+% which combines the physical transition of the latent variance with controlled stochastic evolution of the model parameters.
+
+% The observations available at time \(t\) are
+% %
+% \begin{equation}
+% Y_t
+% =
+% \left(
+% R_t,
+% \mathcal{O}_t
+% \right).
+% \end{equation}
+% %
+% The sequential objective is to approximate the filtering distribution
+% %
+% \begin{equation}
+% p
+% \left(
+% X_t
+% \mid
+% Y_{1:t}
+% \right),
+% \end{equation}
+% %
+% which satisfies the Bayesian filtering recursion
+% %
+% \begin{align}
+% p
+% \left(
+% X_t
+% \mid
+% Y_{1:t}
+% \right)
+% &\propto
+% p
+% \left(
+% Y_t
+% \mid
+% X_t
+% \right)
+% p
+% \left(
+% X_t
+% \mid
+% Y_{1:t-1}
+% \right),
+% \label{eq:filter_update}
+% \\
+% p
+% \left(
+% X_t
+% \mid
+% Y_{1:t-1}
+% \right)
+% &=
+% \int
+% p
+% \left(
+% X_t
+% \mid
+% X_{t-1}
+% \right)
+% p
+% \left(
+% X_{t-1}
+% \mid
+% Y_{1:t-1}
+% \right)
+% \,dX_{t-1}.
+% \label{eq:filter_prediction}
+% \end{align}
+
+% Under a probabilistic observation model, the cross-measure likelihood factorizes as
+% %
+% \begin{equation}
+% p
+% \left(
+% Y_t
+% \mid
+% X_t
+% \right)
+% =
+% p_{\mathbb{P}}
+% \left(
+% R_t
+% \mid
+% V_t,
+% \boldsymbol{\vartheta}_{\mathbb{P},t}
+% \right)
+% p_{\mathbb{Q}}
+% \left(
+% \mathcal{O}_t
+% \mid
+% V_t,
+% T
+% \left(
+% \boldsymbol{\vartheta}_{\mathbb{P},t},
+% \lambda_{V,t}
+% \right),
+% \boldsymbol{\psi}_{J,t}
+% \right).
+% \label{eq:joint_likelihood}
+% \end{equation}
+% %
+% In our implementation, the return component is represented by a physical-measure likelihood, whereas the option component is constructed from the discrepancy between observed and model-implied option prices. More generally, the resulting observation score can be written as
+% %
+% \begin{equation}
+% G_t(X_t)
+% =
+% p_{\mathbb{P}}
+% \left(
+% R_t
+% \mid
+% X_t
+% \right)
+% \exp
+% \left\{
+% -\beta
+% \mathcal{L}_{\mathbb{Q}}
+% \left(
+% \mathcal{O}_t;
+% X_t
+% \right)
+% \right\},
+% \label{eq:generalized_observation_score}
+% \end{equation}
+% %
+% where \(\mathcal{L}_{\mathbb{Q}}\) is the option-pricing loss and \(\beta>0\) controls its relative contribution.
+
+% The sequential formulation carries forward information from the expanding observation history through the previous filtering distribution. At the same time, the transition model allows the latent variance and parameters to adapt to changing market conditions. The main computational challenge is to maintain a sufficiently diverse population of plausible physical and risk-neutral parameter configurations while avoiding particle degeneracy and preserving the structural relation in~\eqref{eq:pq_map}. The particle-filtering procedure used to approximate this distribution is introduced in the following section.
+
+
+% \subsection{Physical and risk-neutral Heston dynamics}
+% Under $\Pmeasure$, spot $S_t$ and variance $v_t$ satisfy
+% \begin{align}
+% dS_t &= \mu S_t\,dt + \sqrt{v_t}S_t\,dW_t^{S,\Pmeasure},\\
+% dv_t &= \kappa_P(\theta_P-v_t)\,dt + \xi\sqrt{v_t}\,dW_t^{v,\Pmeasure},
+% \end{align}
+% with $dW_t^{S,\Pmeasure}dW_t^{v,\Pmeasure}=\rho\,dt$. Under $\Qmeasure$, the spot drift becomes $r_t-q_t$. With a linear variance-risk premium $\lambda v_t$, the variance drift becomes
+% \begin{equation}
+% dv_t=[\kappa_P\theta_P-(\kappa_P+\lambda)v_t]dt+\xi\sqrt{v_t}\,dW_t^{v,\Qmeasure}.
+% \end{equation}
+% Thus
+% \begin{equation}\label{eq:pq}
+% \kappa_Q=\kappa_P+\lambda,\qquad
+% \theta_Q=\frac{\kappa_P\theta_P}{\kappa_P+\lambda},
+% \end{equation}
+% while $\xi$ and $\rho$ are shared. Equation~\ref{eq:pq} makes the ambiguity explicit: option prices identify combinations such as $\kappa_Q$, not necessarily a unique $(\kappa_P,\lambda)$ decomposition.
+
+% \subsection{Extension to Bates jump diffusion}
+% The framework is not restricted to continuous Heston paths. Its Bates implementation augments log-price dynamics with a compound-Poisson jump term \cite{bates1996}:
+% \begin{equation}
+% \frac{dS_t}{S_{t^-}}=(\mu-\nu_P\chi_P)dt+\sqrt{v_t}\,dW_t^S+(e^{J}-1)dN_t,
+% \end{equation}
+% where $N_t$ has physical intensity $\nu_P$, $J\sim\mathcal N(m_P,s_J^2)$, and $\chi_P=\exp(m_P+s_J^2/2)-1$ compensates the jump drift. The particle expands from seven Heston state/parameter entries to eleven by adding $(\nu_P,m_P,s_J,\eta)$, where $\eta$ tilts jump risk across measures. The repository implements
+% \begin{align}
+% \nu_Q &= \nu_P\exp(\eta m_P+\tfrac12\eta^2s_J^2),\\
+% m_Q &= m_P+\eta s_J^2,\qquad s_{J,Q}=s_J,
+% \end{align}
+% alongside Eq.~\ref{eq:pq} for variance risk. The return likelihood becomes a finite Poisson mixture of Gaussians, and the pricing module multiplies the Heston characteristic function by the compensated jump characteristic function.
+
+% This extension illustrates the intended systems boundary. The data adapter adds hourly date keys for crypto, the particle and measure-map modules add jump parameters, and the pricing engine changes from Heston to Bates; weighting, repair, ESS resampling, EAPE/MAPE summaries, and evaluation contracts remain structurally unchanged. Bates results are not included in the present empirical tables because a complete, aligned Bates evaluation artifact is not available; the implementation is presented as evidence of extensibility rather than an unsupported performance claim.
+
+% \subsection{Identification geometry}
+% The mapping in Eq.~\ref{eq:pq} explains why joint calibration is useful but cannot, by itself, guarantee structural recovery. Holding $\kappa_Q$ fixed defines a ridge $\lambda=\kappa_Q-\kappa_P$. Holding $\theta_Q$ fixed additionally constrains the product $\kappa_P\theta_P$, but finite and noisy return histories may still provide little curvature along the ridge. Option prices can therefore be accurate while $\kappa_P$ and $\lambda$ separately drift. Return observations add information transverse to this pricing ridge; the practical question is whether that information is sufficiently strong at the available horizon and frequency. This motivates reporting both the parameters in $\Pmeasure$ and the transformed quantities actually used for pricing in $\Qmeasure$.
+
+% \subsection{Joint posterior and operational objective}
+% Let $\Theta=(\mu,\xi,\kappa_P,\theta_P,\rho,\lambda)$, $R_{1:T}$ be log returns, $C_{1:T}$ option panels, and $v_{1:T}$ latent variance. The target factorizes as
+% \begin{multline}
+% p(\Theta,v_{1:T}\mid R_{1:T},C_{1:T})\propto p(\Theta)p(v_1\mid\Theta)\\
+% \times\prod_{t=1}^{T}p(v_t\mid v_{t-1},\Theta)p(R_t\mid v_t,\Theta)p(C_t\mid v_t,\Theta).
+% \end{multline}
+% For daily $\Delta t$, the return term uses
+% \begin{equation}
+% R_t\mid v_t,\Theta\approx\mathcal{N}((\mu-\tfrac12v_t)\Delta t,v_t\Delta t).
+% \end{equation}
+% The option term is an approximate likelihood implemented as a monotone penalty on the discrepancy between observed calls and QuantLib Heston prices evaluated at the transformed $\Theta_Q$. This construction is approximate Bayesian computation rather than exact posterior sampling: its purpose is to retain candidates supported by both time-series and cross-sectional observations.
+
+% More explicitly, if $e_t(\Theta,v_t)$ denotes an aggregate option-price discrepancy, the implementation uses a positive score $g(e_t)$ that decreases with error. The operational update is
+% \begin{equation}
+% \widetilde w_t^{(i)}=w_{t-1}^{(i)}p(R_t\mid v_t^{(i)},\Theta_t^{(i)})g(e_t(\Theta_t^{(i)},v_t^{(i)})).
+% \end{equation}
+% Because $g$ is not presented as a calibrated observation-noise density, posterior variances should be read as algorithmic uncertainty summaries, not exact Bayesian credible intervals. This qualification is important for both scientific interpretation and downstream risk use.
+
+% \subsection{Sequential inference}
+% Particle $i$ stores $(\Theta_t^{(i)},v_t^{(i)},w_t^{(i)})$. At each observation, the algorithm (1) diffuses parameters locally, (2) advances variance with an Euler Heston step conditioned on the observed return shock, (3) multiplies the weight by the return likelihood and option penalty, and (4) normalizes. Systematic resampling occurs when
+% \begin{equation}
+% \operatorname{ESS}(w_t)=\left(\sum_i(w_t^{(i)})^2\right)^{-1}<N/2.
+% \end{equation}
+% A particle whose current score falls below half of its historical maximum is reinitialized from the current surface. A mixing mass $\alpha$ is assigned to repaired particles and $1-\alpha$ to survivors before normalization. We report two summaries: EAPE, the weighted particle expectation, and MAPE, the particle with the best option-pricing score.
+
+% \begin{algorithm}[t]
+% \caption{Sequential joint calibration}\label{alg:joint}
+% \begin{algorithmic}[1]
+% \STATE Initialize $\{\Theta_0^{(i)},v_0^{(i)},w_0^{(i)}\}_{i=1}^N$
+% \FOR{$t=1,\ldots,T$}
+% \FOR{each particle $i$ in parallel}
+% \STATE Propagate $\Theta_t^{(i)}$ and $v_t^{(i)}$
+% \STATE Map $\Theta_t^{(i)}$ to $\Theta_{Q,t}^{(i)}$ using Eq.~\ref{eq:pq}
+% \STATE Score return likelihood and QuantLib option discrepancy
+% \STATE Reinitialize degraded particle if required
+% \ENDFOR
+% \STATE Mix repaired and surviving weights; normalize
+% \IF{$\operatorname{ESS}<N/2$} \STATE Systematically resample \ENDIF
+% \STATE Record EAPE and MAPE summaries
+% \ENDFOR
+% \end{algorithmic}
+% \end{algorithm}
+
+% \subsection{Propagation, weighting, and repair details}
+% The propagation step deliberately separates slowly changing structural parameters from the rapidly changing latent state. Physical parameters receive small Gaussian perturbations at daily scale; positivity is imposed on $\xi$, $\kappa_P$, and $\theta_P$, and $\rho$ is clipped to $(-1,1)$. The variance innovation is coupled to the standardized return shock. Writing
+% \begin{equation}
+% \epsilon_{1,t}=\frac{R_t-(\mu-\tfrac12v_{t-1})\Delta t}{\sqrt{v_{t-1}\Delta t}},
+% \end{equation}
+% an independent $z_t\sim\mathcal N(0,1)$ gives
+% \begin{equation}
+% \epsilon_{2,t}=\rho\epsilon_{1,t}+\sqrt{1-\rho^2}z_t,
+% \end{equation}
+% and the discretized physical variance transition is
+% \begin{equation}
+% v_t=\left[v_{t-1}+\kappa_P(\theta_P-v_{t-1})\Delta t+\xi\sqrt{v_{t-1}\Delta t}\epsilon_{2,t}\right]_+.
+% \end{equation}
+% Conditioning the variance shock on the observed return preserves the instantaneous leverage relation instead of evolving $S_t$ and $v_t$ independently.
+
+% Repair is triggered relative to each particle's own historical best score, not a global fixed likelihood cutoff. This adapts to changes in the scale of option panels, but it also means that repair frequency depends on path history. When $R$ particles are repaired, their total pre-normalization mass is $\alpha$, distributed as $\alpha/R$ after rescoring; survivors receive the remaining mass $1-\alpha$. The mechanism prevents a large repaired subset from automatically overwhelming particles that have remained consistent through time.
+
+% \subsection{Laplace initialization}
+% Independent point initializations can collapse diversity or repeatedly converge to the same local optimum. The LMS variant first obtains a surface-calibration MAP estimate $\widehat\Theta$ and a local covariance from curvature, then samples
+% \begin{equation}
+% \Theta^{(i)}\sim\mathcal{N}(\widehat\Theta,\widehat\Sigma).
+% \end{equation}
+% The implementation symmetrizes the covariance, adds diagonal jitter if Cholesky factorization fails, and falls back to a small isotropic covariance for non-finite curvature. Positivity and correlation constraints are enforced after sampling. The same mechanism repairs individual degraded particles during filtering.
+
+% The approximation serves two roles. At $t=0$, it converts local curvature into population diversity instead of repeating a point optimizer from equivalent guesses. During filtering, it creates a local proposal around the current surface when a particle ceases to explain new data. This design makes surface calibration an interchangeable proposal mechanism rather than the final estimator.
+
+% \subsection{Software architecture}
+% The system follows the pipeline
+% \begin{center}
+% \small Market data $\rightarrow$ preprocessing $\rightarrow$ initialization $\rightarrow$ particle filter $\rightarrow$ QuantLib pricing $\rightarrow$ evaluation.
+% \end{center}
+% Data adapters expose returns, rates, spot, dates, and option grids. Initializers expose calibrated particles and, for LMS, covariance. The filter depends on a model-specific $\Pmeasure$--$\Qmeasure$ map and pricing interface; Heston and Bates trees demonstrate this separation. Evaluation scripts emit parameter-recovery, one-step NLL, and contract-aligned option-error reports. This modularity supports new models without rewriting the entire pipeline.
+
+% \begin{table}[t]
+% \caption{Framework modules and replaceable contracts.}\label{tab:modules}
+% \centering\small
+% \begin{tabular}{p{.22\columnwidth}p{.69\columnwidth}}\toprule
+% Module & Contract\\\midrule
+% Data & Dated spot, returns, rates, dividends, option grid\\
+% Initialization & MAP particle or MAP plus local covariance\\
+% Dynamics & Parameter proposal, latent-state transition, constraints\\
+% Measure map & Model-specific transformation $\Theta_P\mapsto\Theta_Q$\\
+% Pricing & QuantLib model price for a contract panel\\
+% Filtering & Weight, repair, normalize, ESS-resample\\
+% Evaluation & Parameter, one-step NLL, and aligned pricing reports\\\bottomrule
+% \end{tabular}
+% \end{table}
+
+% The dominant runtime is option scoring: with $N$ particles and $M_t$ contracts at time $t$, filtering requires $O(\sum_t NM_t)$ pricing calls, while propagation and resampling are $O(NT)$. Particle scoring is embarrassingly parallel within a time step. The framework exposes the thread count in its run configuration and keeps model pricing behind a narrow interface, allowing future analytic, cached, or surrogate engines without altering filtering semantics.
+
+\section{Online Measure-Coupled Calibration}
+
+\subsection{Method Overview}
+\label{sec:method_intuition}
+Calibration is ill-conditioned because distinct parameter settings can
+produce similar option surfaces\cite{gatheral2006,cui2017full,mrazek2017calibration}. MCC addresses the additional cross-measure ambiguity by combining option-surface information, return likelihoods, and temporal regularisation. Each particle represents
+$X_t =
+\left(
+V_t,
+\boldsymbol{\vartheta}_{\mathbb{P},t},
+\lambda_{V,t}
+\right),
+$
+with jump parameters added for Bates.
+Particles are initialized from a risk-neutral surface calibration. We consider either Gaussian perturbations around the calibrated solution or samples from a Laplace approximation based on the local curvature of the
+calibration objective. After initialization, latent variance is propagated under the physical-measure dynamics, while the model parameters follow small stochastic transitions. Each particle is then mapped to risk-neutral space and weighted using the return likelihood together with the
+option-surface error. Particles that explain both observations receive larger weights, while poorly matching particles are removed during resampling.
+
+% Calibration of stochastic volatility models is often ill-conditioned, as multiple parameter configurations can produce nearly identical option surfaces. This ambiguity is more pronounced in the joint setting because option prices depend on the physical-measure parameters and the volatility risk premium only through their transformed risk-neutral representation.
+
+% We combine three sources of information. The observed option surface constrains the parameters under \(\mathbb{Q}\), the return likelihood constrains the latent volatility and physical dynamics under \(\mathbb{P}\), and the previous parameter estimate provides short-term temporal regularization. The augmented particle state is
+% %
+% \begin{equation}
+% X_t
+% =
+% \left(
+% V_t,
+% \boldsymbol{\vartheta}_{\mathbb{P},t},
+% \lambda_{V,t}
+% \right),
+% \end{equation}
+% %
+% with the Bates jump parameters appended when required.
+
+% %[TODO] why do we perturb, what is the use, why not keep it constant?
+% %[TODO] there is no formula for likelihood mentioned in P space... we should add it somewhere, because it has some assumption
+% An initial guess of $X_t$is obtained through surface calibration in the risk-neutral space. For sampling multiple particles, we perturb this initial guess using gaussian noise. A more principled approach is to use the initial guess to construct a laplace prior over the particles. Once, we have initialised our particles, the $V_t$ transitions using eqn \ref{eq:heston_q_variance} and the parameters $\boldsymbol{\vartheta}_{\mathbb{P}}$transition using an OU process without drift. The weights of the propagated particles are calculated from the return likelihood and a penalty based on mismatch in the call option surface. This ensures that good guesses that predict both the return likelihood and the option surfaces receive more weight, whereas the bad guesses don't survive. 
+% Particles are initialized using a Laplace-regularised surface calibration. The option-pricing objective is supplemented by a Gaussian penalty centred at the previous physical-measure estimate. This discourages the optimizer from moving arbitrarily between risk-neutral-equivalent parameter configurations while preserving the fit to the current option surface. The resulting particles are subsequently propagated and weighted using information from both measures.
+
+\subsection{Laplace-Regularized Initialization}
+\label{sec:laplace_initialization}
+
+Let \(u\) denote the unconstrained representation of the augmented parameter vector. The corresponding constrained parameters are obtained through
+%
+\begin{equation}
+\Theta(u)
+=
+\left(
+\mu,
+e^{u_{\kappa}},
+e^{u_{\theta}},
+e^{u_{\xi}},
+\tanh(u_{\rho}),
+u_{\lambda},
+e^{u_V}
+\right).
+\label{eq:parameter_transform}
+\end{equation}
+%
+The physical-measure parameters and volatility risk premium are then transformed to the risk-neutral measure using the mapping in Sec.~\ref{sec:pq_transformation}.
+
+For the option panel
+%
+\begin{equation}
+\mathcal{O}_t
+=
+\left\{
+\left(
+K_{t,j},
+\tau_{t,j},
+C_{t,j}^{\mathrm{mkt}}
+\right)
+\right\}_{j=1}^{M_t},
+\end{equation}
+%
+we define the surface-calibration loss as
+%
+\begin{equation}
+\mathcal{L}_{\mathbb{Q},t}(u)
+=
+\frac{1}{M_t}
+\sum_{j=1}^{M_t}
+\left(
+C_{t,j}^{\mathrm{mkt}}
+-
+C_{t,j}^{\mathrm{model}}(u)
+\right)^2.
+\label{eq:q_surface_loss}
+\end{equation}
+
+Let \(\overline{u}_t\) and \(\Sigma_t\) denote the prior mean and covariance in the unconstrained parameter space. At the initial time step, these are constructed from the supplied parameter guess. At subsequent time steps, they are obtained from the previous calibration estimate. The regularized objective is
+%
+\begin{equation}
+\mathcal{J}_t(u)
+=
+\mathcal{L}_{\mathbb{Q},t}(u)
++
+\frac{\gamma}{2}
+\left(
+u_{\mathbb{P}}
+-
+\overline{u}_{\mathbb{P},t}
+\right)^{\top}
+\Sigma_{\mathbb{P},t}^{-1}
+\left(
+u_{\mathbb{P}}
+-
+\overline{u}_{\mathbb{P},t}
+\right),
+\label{eq:laplace_objective}
+\end{equation}
+%
+where \(u_{\mathbb{P}}\) denotes the physical-measure coordinates and \(\gamma>0\) controls the strength of the temporal regularization.
+
+We first obtain a stable mode using Nelder--Mead optimization and subsequently refine it using Levenberg--Marquardt \cite{nelder1965,levenberg1944,marquardt1963}:
+%
+\begin{equation}
+u_t^{\star}
+=
+\arg\min_{u}
+\mathcal{J}_t(u).
+\end{equation}
+%
+The local curvature around \(u_t^{\star}\) defines a Laplace approximation \cite{tierney1986laplace}
+%
+\begin{equation}
+q_t^{\mathrm{Lap}}(u)
+=
+\mathcal{N}
+\left(
+u_t^{\star},
+\widehat{\Sigma}_t
+\right),
+\qquad
+\widehat{\Sigma}_t
+\approx
+\left[
+\nabla_u^2
+\mathcal{J}_t
+\left(
+u_t^{\star}
+\right)
+\right]^{-1}.
+\label{eq:laplace_distribution}
+\end{equation}
+%[TODO] particles and particles? is it parameters?
+Initial particles selected for reinitialization are sampled from \(q_t^{\mathrm{Lap}}\) and transformed back to the constrained parameter space.
+
+\begin{algorithm}[t]
+\caption{Laplace-Regularized Surface Calibration}
+\label{alg:laplace_surface_calibration}
+\begin{algorithmic}[1]
+\Require Option panel \(\mathcal{O}_t\), prior mean \(\overline{u}_t\), prior covariance \(\Sigma_t\), and regularization coefficient \(\gamma\)
+\Ensure Calibrated mode \(u_t^{\star}\) and covariance \(\widehat{\Sigma}_t\)
+
+\State Define the option-surface loss \(\mathcal{L}_{\mathbb{Q},t}(u)\)
+\State Construct the regularized objective \(\mathcal{J}_t(u)\)
+\State Obtain an initial solution using Nelder--Mead
+\State Refine the solution using Levenberg--Marquardt
+\State Estimate \(\widehat{\Sigma}_t\) from the local curvature
+\State \Return \(\left(u_t^{\star},\widehat{\Sigma}_t\right)\)
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Sequential Joint Calibration}
+\label{sec:mcc}
+
+At time \(t\), MCC represents the augmented state as
+\begin{equation}
+\(
+X_t=(V_t,\boldsymbol{\vartheta}_{\mathbb P,t},
+\lambda_{V,t},\boldsymbol{\psi}_{J,t})
+\)
+\end{equation}
+where the jump parameters are omitted for Heston. Given
+\(Y_t=(R_t,\mathcal O_t)\), the objective is to approximate
+\(p(X_t\mid Y_{1:t})\) sequentially.
+
+The filtering distribution is represented using \(N\) weighted particles, following the standard particle-filter approximation \cite{gordon1993bootstrap,kitagawa1996monte}:
+%
+\begin{equation}
+p
+\left(
+X_t
+\mid
+Y_{1:t}
+\right)
+\approx
+\sum_{i=1}^{N}
+w_t^{(i)}
+\delta_{X_t^{(i)}}.
+\label{eq:particle_approximation}
+\end{equation}
+%
+Each particle contains the latent variance, the physical-measure parameters, and the volatility risk premium.
+
+At each time step, the parameters are propagated using a small stochastic transition,
+%
+\begin{equation}
+u_t^{(i)}
+=
+u_{t-1}^{(i)}
++
+\eta_t^{(i)},
+\qquad
+\eta_t^{(i)}
+\sim
+\mathcal{N}
+\left(
+0,
+Q_u
+\right),
+\label{eq:parameter_transition}
+\end{equation}
+%
+while the latent variance is propagated using the discretized physical-measure Heston dynamics. The resulting parameters are transformed to the risk-neutral measure and used to price the current option panel. In the implementation, the observed return also guides the
+latent-variance transition. For each particle, the return innovation is
+computed using $V_{t-1}^{(i)}$ and coupled to the variance innovation
+through
+\begin{equation}
+\epsilon_{t}^{V,(i)}
+=
+\rho_t^{(i)}\epsilon_t^{S,(i)}
++
+\sqrt{1-\left(\rho_t^{(i)}\right)^2}\,z_t^{(i)},
+\qquad
+z_t^{(i)}\sim\mathcal{N}(0,1),
+\end{equation}
+which is then used to propagate $V_t^{(i)}$. This return-guided proposal coincides with the conditional Euler transition
+$p(V_t \mid R_t,V_{t-1})$. Its proposal correction therefore cancels, and the return contribution to the incremental particle weight is the marginal likelihood
+$p^{\mathbb{P}}(R_t\mid V_{t-1}^{(i)},\boldsymbol{\vartheta}_{P,t}^{(i)})$.
+The correlation parameter $\rho$ enters through the guided transition rather than explicitly through this marginal return likelihood.
+
+The weight of particle \(i\) is updated using the physical-measure return score and the risk-neutral option-pricing loss:
+%
+\begin{equation}
+\label{eq:joint_weight}
+\widetilde{w}_t^{(i)}
+=
+w_{t-1}^{(i)}
+p^{\mathbb{P}}
+\left(
+R_t \mid V_{t-1}^{(i)},
+\boldsymbol{\vartheta}_{P,t}^{(i)}
+\right)
+\exp\left\{
+-\beta
+\mathcal{L}_{Q,t}
+\left(X_t^{(i)}\right)
+\right\}.
+\end{equation}
+%
+where \(\beta>0\) controls the relative contribution of the option-pricing term. We interpret $\exp\{-\beta\mathcal L_{\mathbb Q}\}$ as a tempered pseudo-likelihood for the option panel, with $\beta$ controlling the assumed observation scale. Here,
+$p^{\mathbb{P}}(R_t\mid V_{t-1}^{(i)},
+\boldsymbol{\vartheta}_{P,t}^{(i)})$
+denotes the marginal Gaussian return likelihood under the Euler discretization.
+% [TODO] what is this predefined recovery threshold
+% [TODO] why do we use this redistrivution of weights? Should we emphasis? Should we define this as this is not generally used... as in give this a term
+For Bates, particles sample the return-conditioned jump count, marginalise jump size, and use the resulting conditional Euler
+transition and Poisson-Gaussian return likelihood. Particles whose joint scores fall below a predefined recovery threshold are reinitialised using the Laplace approximation in Eq.~\eqref{eq:laplace_distribution}, recalibrated using the current option surface. Let \(N_t^{\mathrm{reinit}}\) denote the number of particles reinitialized at time \(t\). A fraction \(\alpha\in(0,1)\) of the total weight is distributed uniformly among these particles (we choose an $\alpha = 0.05)$:
+$ w_t^{(i)} =
+\frac{\alpha}{N_t^{\mathrm{reinit}}},i\in\mathcal{R}_t,
+$
+where \(\mathcal{R}_t\) denotes the set of reinitialized particles. The remaining weight mass \(1-\alpha\) is distributed proportionally among the retained particles. The weights are then normalised, and systematic resampling is performed \cite{kitagawa1996monte, douc2005resampling}.
+
+% [TODO Ahmik] I have not checked the algorithms
+\begin{algorithm}[t]
+\caption{Online Joint Calibration}
+\label{alg:online_joint_calibration}
+\begin{algorithmic}[1]
+\Require Returns \(\{R_t\}_{t=1}^{T}\), option panels \(\{\mathcal{O}_t\}_{t=1}^{T}\), and number of particles \(N\)
+\Ensure Estimated parameters and latent variance paths
+
+\State Initialize particles using Alg.~\ref{alg:laplace_surface_calibration}
+\State Set \(w_0^{(i)} \gets 1/N\) for \(i=1,\ldots,N\)
+
+\For{\(t=1,\ldots,T\)}
+    \For{\(i=1,\ldots,N\)}
+        \State Propagate the parameters using Eq.~\eqref{eq:parameter_transition}
+        \State Propagate the latent variance using the return-guided correlated Euler transition.
+        \State Transform the parameters from \(\mathbb{P}\) to \(\mathbb{Q}\)
+        \State Compute the marginal return likelihood using $V_{t-1}^{(i)}$
+        \State Compute the option-surface loss
+        \State Update the weight using Eq.~\eqref{eq:joint_weight}
+    \EndFor
+
+    \State Identify particles below the recovery threshold
+    \State Reinitialize them using the current Laplace calibration
+    \State Redistribute the weight mass using \(\alpha\)
+    \State Normalize the particle weights
+    \State Apply systematic resampling
+\EndFor
+
+\State Estimate the parameters from the final particle population
+\State Reconstruct the latent variance paths using ancestral sampling
+\end{algorithmic}
+\end{algorithm}
+
+Latent variance paths are reconstructed from the retained particle genealogies using ancestral smoothing \cite{godsill2004smoothing}. The Bates implementation follows the same procedure after augmenting each particle with the jump parameters and replacing the Heston pricing operator with the corresponding Bates pricing engine.
+
+In the Bates implementation, each particle additionally contains the
+physical-measure jump intensity, mean log-jump size, jump-size
+volatility, and a jump change-of-measure parameter \(\eta\). Before
+option pricing, these are mapped according to
+\[
+\lambda_J^{\mathbb Q}
+=
+\lambda_J^{\mathbb P}
+\exp\!\left(
+\eta\mu_J^{\mathbb P}
++\frac{1}{2}\eta^2\sigma_J^2
+\right),
+\qquad
+\mu_J^{\mathbb Q}
+=
+\mu_J^{\mathbb P}+\eta\sigma_J^2,
+\]
+with \(\sigma_J\) shared across measures. The filter propagates the
+jump parameters together with the Heston parameters, advances the
+latent variance using the Bates dynamics, and evaluates the return
+likelihood using a Poisson-Gaussian mixture.
+
+% \section{Implementation Framework}
+% \label{sec:implementation}
+% % [TODO] what is LBGFSpp?, I do not see it in Google search
+% The complete calibration framework is implemented in C++17 with a focus on efficient repeated option pricing and sequential inference. QuantLib is used for the Heston and Bates pricing engines, date handling, yield curves, and option-contract construction, while Eigen is used for numerical linear algebra and covariance calculations. Parameter optimization is performed in an unconstrained space using Nelder-Mead or Levenberg-Marquardt from QuantLib and LBGFSpp, respectively. 
+
+% The particle-filtering pipeline is implemented entirely in C++, including state propagation, parameter transformation, likelihood evaluation, resampling, and latent-path reconstruction. Since option prices must be evaluated repeatedly for every particle and contract, particle-level pricing and weighting operations are parallelised across CPU threads.  These design choices make the framework suitable for experiments involving large particle populations, multiple strikes and maturities, and higher-frequency option surfaces.
+
+% % [TODO] market generator is not there for Bates, should I do it?
+% We additionally provide a QuantLib-based synthetic market generator for both the Heston and Bates models. The generator simulates latent variance paths and log returns under the physical measure. It also supports parameter drifts across days, applies the corresponding volatility-risk-premium transformation, and generates option surfaces under the risk-neutral measure. This provides complete ground truth for evaluating latent-state recovery, physical and risk-neutral parameter estimation, and volatility-risk-premium recovery. The released codebase includes the calibration framework, synthetic market generator, experiment configurations, and evaluation utilities.
+
+%[TODO Ahmik] I have not read this section
+\section{Experimental Setup}
+
+\paragraph{Implementation.}
+MCC is implemented in C++17 using QuantLib for Heston and Bates pricing \cite{quantlib} and Eigen for numerical linear algebra \cite{eigen}. Particle scoring is parallelized across CPU threads. We release the calibration code and evaluation utilities
+\href{https://anonymous.4open.science/r/Measure_Coupled_Calibration/}
+{\texttt{MCC-Code}}. The synthetic market generator is also released at \newline \href{https://anonymous.4open.science/r/Synthetic-Market-Generator/}{\texttt{Synthetic-Market-Generator.}}
+
+\paragraph{Initializations}
+
+Perturbed MCC initialises particles by Gaussian perturbation around the
+surface-calibration solution, whereas Laplace MCC samples them from the
+local Laplace approximation. Both variants use the same subsequent
+filtering procedure. We use \(N=250\) particles, \(\beta=1\), \(\gamma=1\), and
+recovery-weight fraction \(\alpha=0.05\).  The relative threshold is half of the maximum score. Parameter transitions use independent Gaussian random walks with
+\(
+Q_{\phi}=\Delta t\,\operatorname{diag}(d^2)
+\).
+For Heston,
+\newline
+\(
+d=(0.12,\,0.20,\,0.35,\,0.015,\,0.08)
+\)
+for
+\(
+\phi=(\mu,\xi,\kappa_{\mathbb P},\theta_{\mathbb P},\rho)
+\),
+with \(\Delta t=1/252\). The scales reflect the different parameter
+magnitudes: larger local variation is allowed for \(\xi\) and
+\(\kappa_{\mathbb P}\), while smaller perturbations for
+\(\theta_{\mathbb P}\) and \(\rho\) reduce positivity and correlation
+boundary clipping. For hourly Bates experiments, \(\Delta t=1/(365\times24)\);
+the scales for \(\lambda_V\) and
+\((\lambda_J,\mu_J,\sigma_J,\eta)\) are
+\(0.18\) and \((0.15,0.025,0.06,0.20)\), respectively.
+
+% TODO-CITATION: add the exact NSE and cryptocurrency data-source/API citations in Sec.~\ref{sec:real_panels}.
+\subsection{Baselines}
+\label{sec:baselines}
+
+We compare the proposed joint estimator against baselines that use information from only one probability measure. The physical-measure baselines estimate model parameters from historical returns, whereas the risk-neutral baselines calibrate directly to observed option surfaces. Since these methods estimate different parameterizations, they are evaluated separately in the corresponding \(\mathbb{P}\)- and \(\mathbb{Q}\)-space experiments.
+
+\subsubsection{Physical-Measure Baselines}
+
+\paragraph{GARCH-MCMC}
+The first baseline constructs a proxy for the latent variance using a GARCH\((1,1)\) model \cite{bollerslev1986garch},
+%
+\begin{equation}
+h_t
+=
+\omega
++
+\alpha
+\left(
+R_{t-1}-\mu
+\right)^2
++
+\beta h_{t-1}.
+\end{equation}
+%
+The GARCH parameters are fitted by minimizing the negative log-likelihood of the observed returns. Conditional on the resulting variance path, an adaptive Metropolis sampler \cite{haario2001adaptive} estimates the physical-measure Heston or Bates parameters. This baseline provides a computationally convenient estimate of the physical dynamics, but treats the estimated GARCH variance as an observed proxy rather than integrating over its uncertainty.
+
+\paragraph{Particle MCMC}
+The second physical-measure baseline replaces the deterministic volatility proxy with a particle-filter likelihood estimator, as in particle MCMC \cite{andrieu2010particle,stramer2011bayesian}. For each parameter proposal, an inner bootstrap particle filter \cite{gordon1993bootstrap} integrates over the latent variance process and estimates $p_{\mathbb{P}}
+\left(
+R_{1:t}
+\mid
+\boldsymbol{\vartheta}_{\mathbb{P}}
+\right)$
+The estimated likelihood is used within an adaptive Metropolis sampler to recover the physical-measure parameters. We apply both physical-measure baselines to expanding return windows, beginning once ten observations are available. The MCMC chains use \(5{,}000\) iterations, with the first \(1{,}000\) discarded as burn-in. The particle MCMC likelihood is evaluated using \(1{,}500\) particles. Neither baseline uses option prices or estimates the volatility risk premium.
+
+\subsubsection{Risk-Neutral Baselines}
+
+\paragraph{Single-Surface Calibration.}
+As the standard cross-sectional calibration baseline, the Heston or Bates model is fitted independently to each observed option surface \cite{cui2017full,mrazek2017calibration}. The calibration directly estimates the risk-neutral parameters and the current variance \(V_t\) by minimizing the discrepancy between market and model-implied option prices. Calibration is performed using the QuantLib model helpers \cite{quantlib} and a Nelder-Mead simplex optimizer \cite{nelder1965}. Because each surface is treated independently, this baseline does not retain information from preceding dates or hours.
+
+\paragraph{Multi-Surface Calibration.}
+We additionally consider a stronger risk-neutral baseline that jointly calibrates the model to the current option surface and the two immediately preceding surfaces. The structural risk-neutral parameters $
+\left(
+\kappa_{\mathbb{Q}},
+\theta_{\mathbb{Q}},
+\xi,
+\rho
+\right)$
+are shared across the three surfaces, while a separate latent variance \(V_t\) is estimated for each surface. For the Bates model, the risk-neutral jump parameters are also shared within the calibration block. The optimisation is initialised through a random search over candidate parameter configurations and refined using Nelder-Mead optimization~\cite{nelder1965}.
+
+The multi-surface estimator is a particularly strong baseline because it exploits short-term temporal stability without using physical-measure returns or the structural transformation between \(\mathbb{P}\) and \(\mathbb{Q}\).
+
+The physical-measure baselines do not recover risk-neutral parameters or the volatility risk premium, while the risk-neutral baselines cannot uniquely recover their physical-measure decomposition. The proposed method is therefore compared with each baseline in the parameter space that the corresponding estimator directly identifies.
+
+\subsection{Synthetic Markets}
+% We provide an open-source C++17 generator for synthetic Heston option
+% markets with known latent states and parameters, enabling controlled
+% evaluation before moving to irregular real-market panels. Given the
+% initial price, variance, physical parameters, volatility risk premium,
+% rates, dividend yield, and strike-maturity grid, it simulates the
+% underlying and variance using QuantLib's Heston process. The short rate
+% follows a Hull-White process, while model parameters evolve through
+% Ornstein-Uhlenbeck transitions with optional Poisson jumps. European
+% calls are priced analytically and converted to Black implied
+% volatilities, with expired contracts rolled to preserve their maturity
+% horizons. The output includes contract-level market data together with
+% the complete parameter, risk-premium, and latent-variance paths.
+We provide an open-source C++17 generator for complete synthetic Heston option markets with known latent states and model parameters. This
+supports controlled evaluation. The generator assumes that model parameters are approximately stable over short intervals, with occasional larger changes representing parameter jumps.
+The generator is initialised with the underlying price, latent variance,
+physical-measure Heston parameters, volatility risk premium, interest rate, dividend yield, and the strike-maturity grid. The short rate follows a Hull-White process, while the Heston parameters and volatility risk premium evolve through Ornstein-Uhlenbeck transitions with optional Poisson-driven jumps. The underlying price and latent variance are simulated using QuantLib's Heston process. At each date, European call prices are computed with the analytic Heston engine and converted
+to Black-Scholes implied volatilities.  The output contains the date, expiry, strike, time to maturity, risk-free rate, underlying price, call price, and implied volatility, together with the complete paths of the physical-measure parameters, volatility risk premium, and latent variance.
+
+% \subsection{Synthetic markets}
+% In this work, we try to propose an open-source Heston Options data generator written in C++17. Here we try to simulate the real market, yet complete entire data in contract to the real market. This enables testing new ideas before attempting the real market, which is often more noisy, and also contains missing values.
+
+% To this end, we state an important assumption we make to simulate the real market: \emph{Heston parameters remain nearly constant in short intervals of time}. We say that parameters `jump' when they show a large deviation from their short term mean.
+
+% The structure of the data generator is as follows:
+% \begin{itemize}
+%     \item \textbf{Data input}: The generator is initialized with a stock price, instantaneous volatility/variance, Heston parameters under the $\mathbb{P}$--measure, volatility risk premium, interest rate, dividend yield, and the moneyness and maturity structure used to create the option grid. The code also includes parameters controlling the variability and jump behavior of the Heston parameters.
+%     \item \textbf{Data Generator}: We assume the interest rate to follow a Hull-White model with a fixed mean reversion rate and short rate volatility. The Heston parameters and volatility--premium evolve using an OU diffusion process with zero--mean and variance as provided by the input. We use a poisson process with the provided jump internsity to signal when we jump each parameter and by how much as specified in the input 
+%     \footnote{Jump can be positive or negative}. The stock price and instantaneous variance are then evolved using QuantLib's Heston process. For each date and each strike-expiry pair in the option grid, European call prices are computed using QuantLib's analytic Heston pricing engine, and Black implied volatilities are inferred from the resulting call prices. Note, whenever an option expires, we make a new option its place \footnote{For example: if an option, which was created on 1st January 2026 expires on 8th January 2026, then we create a new option on 8th January 2026 which expires on 15th January 2026}. This ensures that the same number of options remain in the market at all times. \footnote{Note, that if any option were to expire on a non-working day, its expiry is shifted to the previous working day}.
+    
+%     \item \textbf{Data output}: The generator outputs a call-option dataset containing the date, expiry date, strike, time to maturity, interest rate, underlying price, call price, and implied volatility. It also outputs the daily path of the physical-measure Heston parameters, volatility risk premium, and instantaneous variance. 
+% \end{itemize}
+\subsection{Real Market Panels}
+
+For the equity experiment, we use RELIANCE call options from the NSE \cite{nse_contract_data} between 1 January and 28 March 2025. The panel contains 6,916 traded contracts across 62 trading days. Indian short-term interest-rate data are obtained from FRED \cite{oecd_india_interest_rate}. For the cryptocurrency experiment, we use hourly BNBUSDT option data from Binance \cite{binance_bnbusdt_options} and SOFR as the risk-free rate \cite{nyfed_sofr}. After aligning returns and option surfaces, the common evaluation set contains 23 date-hour groups and 90 contracts. NSE observations are aligned by date, whereas cryptocurrency observations are aligned by date and hour to avoid many-to-many matches.
+
+% \subsection{Real panels}
+% To test the Stock Option version of the proposed algorithm, we use 3 month RELIANCE call option data from 1 January 2025 to 28 March 2025. This data is taken from the \href{https://www.nseindia.com/report-detail/fo_eq_security#}{NSE Website}. Over this period, there are a total of 6916 traded options over a span of 62 trading days. For rate of interest, we use Indian rate of interest at a monthly frequency downloaded from \href{https://fred.stlouisfed.org/series/INDIR3TIB01STM}{Federal Reserve Bank of St. Louis}.
+
+% The crypto panel contains hourly observations and 23 common date--hour keys (90 common contracts). Date-only and date-hour alignment are handled separately to avoid accidental many-to-many comparisons. We use BNBUSDT options taken from \href{https://data.binance.vision/?prefix=data/option/daily/EOHSummary/BNBUSDT/}{Binance Market data website}. For the rate of interest, we use the Secured Overnight Financing Rate (SOFR) data taken from \href{https://www.newyorkfed.org/markets/reference-rates/sofr}{Reserve bank of new-york website}. 
+
+\subsection{Evaluation Metrics}
+\label{sec:evaluation_metrics}
+
+Synthetic experiments focus on parameter recovery, reported using bias, mean absolute error, and root mean squared error relative to the known ground-truth parameters. For real-market data, return prediction is evaluated using the one-step Gaussian negative log-likelihood for Heston and corresponding Poisson-Gaussian mixture negative log-likelihood for
+Bates, while option-pricing accuracy is measured using the root mean squared error between observed and model-implied call prices.
+Metrics are first computed separately for each date in the NSE data and each date-hour pair in the cryptocurrency data. We then report the median NLL and median option-price RMSE across these groups. This aggregation reduces the influence of unusually large option panels and isolated extreme contracts. All option-pricing comparisons are performed on the common set of contracts available to every method.
+
+\section{Results}
+
+\begin{table}[!t]
+\centering
+\caption{Static synthetic parameter recovery under the physical and risk-neutral measures. Physical-measure results are reported as mean $\pm$ standard deviation over particles.}
+\label{tab:static_parameter_recovery}
+\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lcccc}
+\toprule
+\multicolumn{5}{c}{\textbf{Physical-measure recovery}} \\
+\cmidrule(lr){1-5}
+\textbf{Method}
+& $\boldsymbol{\mu}$
+& $\boldsymbol{\kappa_{\mathbb{P}}}$
+& $\boldsymbol{\theta_{\mathbb{P}}}$
+& $\boldsymbol{\lambda_V}$ \\
+\midrule
+\textit{Truth}
+& .05
+& 1.50
+& .04
+& .50 \\
+
+GARCH-MCMC
+& $.15 \pm .07$
+& $1.40 \pm 1.25$
+& $.05 \pm .05$
+& -- \\
+
+PMCMC
+& $.14 \pm .08$
+& $1.06 \pm 1.05$
+& $.03 \pm .02$
+& -- \\
+
+\textbf{Perturbed MCC}
+& $.08 \pm .25$
+& $1.55 \pm .42$
+& $.04 \pm .01$
+& $.46 \pm .25$ \\
+\midrule
+\multicolumn{5}{c}{\textbf{Risk-neutral recovery}} \\
+\cmidrule(lr){1-5}
+\textbf{Method}
+& $\boldsymbol{\kappa_{\mathbb{Q}}}$
+& $\boldsymbol{\theta_{\mathbb{Q}}}$
+& $\boldsymbol{\xi}$
+& $\boldsymbol{\rho}$ \\
+\midrule
+\textit{Truth}
+& 2.00
+& .03
+& .30
+& -.70 \\
+
+Single-Surface
+& 1.82
+& .03
+& .30
+& -.70 \\
+
+Multi-Surface
+& 1.86
+& .04
+& .30
+& -.73 \\
+
+\textbf{Perturbed MCC}
+& 2.01
+& .03
+& .27
+& -.78 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% \subsection{Static Synthetic Parameter Recovery}
+% Table~\ref{tab:static_parameter_recovery} reports parameter recovery in the static synthetic setting, where the ground-truth parameters remain fixed over time. In the physical measure, the return-only GARCH-MCMC and PMCMC baselines recover the broad parameter scale but exhibit substantial uncertainty in the mean-reversion rate. Perturbed MCC produces estimates closer to the true values of \(\kappa_{\mathbb{P}}\) and \(\theta_{\mathbb{P}}\), while additionally recovering the volatility risk premium \(\lambda_V\), which is not identified by the return-only baselines.
+
+\subsection{Synthetic Parameter Recovery}
+
+Table~\ref{tab:static_parameter_recovery} reports parameter recovery when the generating parameters remain fixed. In the physical measure, the return-only GARCH-MCMC and PMCMC baselines recover the broad parameter scale but exhibit substantial uncertainty in the mean-reversion rate. Perturbed MCC produces estimates closer to the ground-truth values of \(\kappa_{\mathbb{P}}\) and \(\theta_{\mathbb{P}}\), while additionally estimating the volatility risk premium \(\lambda_V\), which is not identified by the return-only
+baselines. In the risk-neutral measure, single- and multi-surface calibration recover the directly identifiable pricing parameters reasonably well, while MCC obtains comparable estimates through the learned physical parameters and the
+\(\mathbb{P}\)-to-\(\mathbb{Q}\) transformation.
+
+Figure~\ref{fig:dynamic_parameter_recovery} evaluates parameter tracking in this more challenging time-varying setting. Recovery is generally more stable in the risk-neutral space, where the parameters are directly constrained by the observed option surfaces. Perturbed MCC follows the broad parameter evolution but occasionally exhibits large
+deviations, particularly in the mean-reversion rate, whereas the Laplace-based variant produces smoother trajectories and reduces these excursions. Physical-measure recovery remains more difficult because it depends jointly on the return history and the cross-measure transformation. Overall, MCC preserves competitive risk-neutral recovery while jointly estimating the corresponding physical dynamics, latent variance, and volatility risk premium, although dynamic identification in the physical space remains challenging.
+
+Figure~\ref{fig:latent_vol_path} complements the parameter results by showing that MCC reconstructs the latent variance path in both the static and time-varying synthetic markets. The sampled posterior paths remain concentrated around the generating trajectory, although uncertainty increases when the model parameters evolve over time.
+
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[scale = 0.35]{figures/synthetic_static_dynamic_latent_paths_lms_v2_2x1.pdf}
+    \caption{Latent variance paths reconstructed by MCC on the static and dynamic synthetic markets. Light curves denote posterior paths obtained through ancestral sampling from the particle population, while the red curve shows the ground-truth variance path.}
+    \Description{Posterior latent-variance trajectories and the ground-truth variance path for static and time-varying synthetic parameter regimes.}
+    \label{fig:latent_vol_path}
+\vspace{-3pt}
+\end{figure}
+
+% In the risk-neutral measure, both single-day and multi-day surface calibration recover the directly identifiable option-pricing parameters reasonably well. The multi-day baseline benefits from pooling neighbouring surfaces, whereas Perturbed MCC obtains comparable risk-neutral estimates indirectly through the learned physical parameters and the \(\mathbb{P}\)-to-\(\mathbb{Q}\) transformation. Overall, the results indicate that joint calibration preserves competitive surface-level recovery while providing a coherent estimate of the corresponding physical dynamics and volatility risk premium.
+
+% \subsection{Dynamic Synthetic Parameter Recovery}
+% Figure~\ref{fig:dynamic_parameter_recovery} evaluates parameter tracking when the generating dynamics vary over time. Recovery is generally more stable in the risk-neutral space, where the parameters are directly constrained by the observed option surfaces. Perturbed MCC follows the
+% broad evolution of the parameters but occasionally exhibits large deviations, particularly for the mean-reversion rate. The Laplace-based variant produces smoother trajectories and reduces these excursions, most clearly for $\theta_{\mathbb{Q}}$ and $\kappa_{\mathbb{Q}}$.
+
+% The physical-measure parameters remain more difficult to recover because their identification depends jointly on the return history and the $\mathbb{P}$-to-$\mathbb{Q}$ transformation. The return-only baselines
+% also show substantial deviation in this setting, while the
+% risk-neutral baselines cannot recover the corresponding physical decomposition. These results indicate that the joint method preserves the cross-measure parameter relation under changing market conditions, although dynamic recovery in the physical space remains the more challenging component of the problem.
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[scale=0.35]{figures/synthetic_pq_kappa_theta_recovery_2x2.pdf}
+    \caption{Dynamic synthetic recovery of the mean-reversion parameters under the physical and risk-neutral measures. The black curves denote the time-varying generating parameters. Perturbed MCC and Laplace MCC are reported using both the weighted particle estimate and the highest-weight particle, while dotted curves denote the corresponding
+$\mathbb{P}$-only and $\mathbb{Q}$-only baselines}
+    \Description{Time-varying physical- and risk-neutral mean-reversion parameter estimates for MCC and the single-measure baselines, compared with the generating parameters.}
+    \label{fig:dynamic_parameter_recovery}
+\vspace{-3pt}
+\end{figure}
+
+\subsection{Real Market Calibration}
+
+Table~\ref{tab:real_option_pricing} reports Heston pricing results on the NSE panel and Bates pricing results on the hourly cryptocurrency panel. The multi-surface baseline achieves the lowest median RMSE on both datasets, confirming that pooling neighbouring option surfaces is a strong calibration strategy. Among the joint methods, Laplace MCC performs most favourably, improving over the ordinary Perturbed MCC variants, particularly on the crypto data. Although the joint estimators do not outperform direct multi-surface calibration in pricing error, they additionally estimate the physical-measure parameters and volatility risk premium within a unified framework. Table~\ref{tab:real_return_nll} reports the median one-step return negative log-likelihood. MCC achieves comparable predictive performance to the physical-measure baselines on NSE, while outperforming the return-only baselines on the cryptocurrency panel. MCC produces these predictions as part of a unified sequential estimate of the latent variance, physical dynamics, and corresponding risk-neutral parameters. Across moneyness buckets, MCC remains competitive with direct calibration, achieving the lowest errors in several regions
+(Fig.~\ref{fig:moneyness_rmse}), while no single method dominates uniformly across datasets and contract types.
+
+\begin{table}[!t]
+\centering
+\caption{Real-market option-pricing performance. RMSE is computed over the common set of contracts available to all methods and aggregated by the median across dates for NSE and date-hour groups for crypto. The best values are bold and the best MCC variant is underlined.}
+\label{tab:real_option_pricing}
+\small
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Method}
+& \textbf{NSE}
+& \textbf{Crypto} \\
+\midrule
+Single Surface
+& 14.050
+& 6.121 \\
+
+Multi Surface
+& \textbf{13.324}
+& \textbf{0.785} \\
+
+Perturbed MCC (mean)
+& 17.895
+& 4.158 \\
+
+Perturbed MCC (max wt)
+& 16.805
+& 4.154 \\
+
+Laplace MCC (mean)
+& 16.797
+& 4.237 \\
+
+Laplace MCC (max wt)
+& \underline{16.745}
+& \underline{2.595} \\
+\bottomrule
+\end{tabular}
+\vspace{-3pt}
+\end{table}
+
+\begin{table}[!t]
+\centering
+\caption{Median one-step return negative log-likelihood. Lower values are better.}
+\label{tab:real_return_nll}
+\small
+\setlength{\tabcolsep}{7pt}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Method}
+& \textbf{NSE}
+& \textbf{Crypto} \\
+\midrule
+GARCH-MCMC
+& $-3.121$
+& $-4.232$ \\
+
+PMCMC
+& $\textbf{-3.203}$
+& $-4.258$ \\
+
+Perturbed MCC (mean)
+& $-3.054$
+& $-4.259$ \\
+
+Perturbed MCC (max wt)
+& $-2.886$
+& $-3.977$ \\
+
+Laplace MCC (mean)
+& $-3.119$
+& $\underline{\textbf{-4.270}}$ \\
+
+Laplace MCC (max wt)
+& $\underline{-3.187}$
+& $-4.231$ \\
+\bottomrule
+\end{tabular}
+\vspace{-3pt}
+\end{table}
+% \subsection{Performance Across Moneyness}
+% \label{sec:moneyness_results}
+
+% Figure~\ref{fig:moneyness_rmse} shows that no single method dominates across all moneyness regions. For crypto, the multi-surface baseline performs best for ATM contracts, while Perturbed MCC and Laplace MCC achieve the lowest OTM and ITM errors, respectively. On NSE, single-surface calibration remains strongest for ITM contracts, whereas the Laplace variants provide the best ATM and OTM performance. Overall, the joint methods are most competitive around ATM and OTM regions, while ITM pricing remains more challenging on NSE.
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[scale = 0.35]{figures/moneyness_rmse_heatmap_crypto_nse_2x1.pdf}
+    \caption{
+Option-pricing RMSE across in-the-money (ITM), at-the-money (ATM), and out-of-the-money (OTM) contracts for the crypto and NSE datasets. Cell labels report the raw RMSE. Outlined cells denote the lowest RMSE. Lower values are better.
+}
+\Description{Heatmaps comparing option-pricing RMSE across in-the-money, at-the-money, and out-of-the-money contracts for crypto and NSE data.}
+\label{fig:moneyness_rmse}
+\vspace{-3pt}
+\end{figure}
+
+\subsection{Ablation of Cross-Measure Weighting}
+
+\begin{table}[!t]
+\centering
+\caption{Observation-score ablation for Laplace MCC on the dynamic synthetic market. All variants use the same option-surface-based Laplace initialization and differ only in the score used during sequential weighting. The $\mathbb{P}$- and $\mathbb{Q}$-space columns average EAPE over $(\kappa_P,\theta_P)$ and $(\kappa_Q,\theta_Q)$, respectively; Macro averages all five parameters. Lower values are better.}
+\label{tab:score_ablation}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Weighting variant}
+& \textbf{$\mathbb{P}$-space}
+& \textbf{$\lambda_V$}
+& \textbf{$\mathbb{Q}$-space}
+& \textbf{Macro} \\
+\hline
+$\mathbb{P}$-score only
+& 0.5619
+& \textbf{0.8116}
+& 0.1563
+& 0.4496 \\
+\hline
+$\mathbb{Q}$-score only
+& 0.5552
+& 0.8476
+& 0.1220
+& 0.4404 \\
+\hline
+Joint $\mathbb{P}$--$\mathbb{Q}$ score
+& \textbf{0.5262}
+& 0.8892
+& \textbf{0.0913}
+& \textbf{0.4248} \\
+\hline
+\end{tabular}
+\vspace{-3pt}
+\end{table}
+Table~\ref{tab:score_ablation} isolates the contribution of the two observation scores within MCC; the score-only variants are not standalone $\mathbb{P}$- or $\mathbb{Q}$-space calibration methods. Joint weighting achieves the lowest aggregate error in both parameter spaces and the lowest macro EAPE overall. The volatility risk premium is the main exception. Since $\lambda_V$ does not enter the return
+likelihood directly, the lower error of the $\mathbb{P}$-score-only variant likely reflects persistence of the common risk-neutral initialisation rather than identification from returns. Thus, combining both scores improves aggregate cross-measure recovery, while dynamic estimation of $\lambda_V$ remains challenging.
+
+
+% To examine the contribution of the two observation channels, we ablate the sequential weighting rule used by Laplace MCC. The $\mathbb{P}$-score-only variant weights particles using only the physical-measure return likelihood, while the $\mathbb{Q}$-score-only
+% variant uses only the option-surface discrepancy. The joint variant uses both terms as in Eq.~\eqref{eq:joint_weight}.
+
+% These variants should not be interpreted as independent
+% physical-only or risk-neutral-only calibration methods. In particular, all three variants use the same Laplace particle initialization obtained from calibration in the risk-neutral space. The experiment therefore isolates the contribution of each observation score within the proposed framework, rather than comparing against the standalone $\mathbb{P}$-space and $\mathbb{Q}$-space baselines introduced in
+% Sec.~\ref{sec:baselines}.
+
+% The $\mathbb{P}$-space EAPE is the macro-average over $\kappa_P$ and $\theta_P$, while the $\mathbb{Q}$-space EAPE is
+% the macro-average over $\kappa_Q$ and $\theta_Q$. The final column averages the EAPE over all five parameters
+% $\{\kappa_P,\theta_P,\lambda_V,\kappa_Q,\theta_Q\}$.
+
+% Table~\ref{tab:score_ablation} shows that joint weighting does not
+% uniformly improve every individual component. Nevertheless, it obtains
+% the lowest aggregate error in both parameter spaces, reducing the
+% $\mathbb{P}$-space EAPE from 0.5552--0.5619 to 0.5262 and the
+% $\mathbb{Q}$-space EAPE from 0.1220--0.1563 to 0.0913. It consequently
+% achieves the lowest macro EAPE across all five parameters.
+
+% The volatility risk premium is the main exception: the
+% $\mathbb{P}$-score-only variant obtains the lowest EAPE for
+% $\lambda_V$. Since $\lambda_V$ does not enter the physical return
+% likelihood directly, this result should not be interpreted as evidence
+% that returns alone identify the risk premium. Rather, the estimate
+% inherits information from the common risk-neutral Laplace
+% initialization and may remain close to its initial value despite failing
+% to track its temporal variation. Overall, the ablation indicates that
+% combining the two scores improves cross-measure recovery, particularly
+% for the physical and risk-neutral mean-reversion parameters, while
+% online identification of the time-varying volatility risk premium
+% remains challenging.
+
+\section{Conclusion}
+We introduced Online Measure-Coupled Calibration, a sequential framework
+that combines returns under the physical measure with option-surface
+information under the risk-neutral measure. MCC tracks latent variance,
+physical-measure parameters, and the volatility risk premium within an
+augmented particle filter while preserving the structural relation
+between the two measures. Laplace initialization and adaptive recovery
+improve particle placement under changing market conditions.
+
+Synthetic experiments show coherent cross-measure recovery and accurate
+latent-variance reconstruction. Joint weighting gives the best aggregate
+recovery, although dynamic identification of the volatility risk premium remains difficult. On NSE equity and hourly cryptocurrency options,
+multi-surface calibration achieves lower pure pricing error, while additionally estimating the corresponding physical dynamics and volatility
+risk premium within a unified sequential procedure. It
+remains competitive with return-only estimators on NSE and achieves the lowest median return negative log-likelihood on the cryptocurrency
+panel. Future work will
+study identification-aware transitions for improved risk-premium tracking.
+% We introduced Online Measure-Coupled Calibration, a sequential framework
+% that combines return observations under the physical measure with option-surface information under the risk-neutral measure. MCC tracks latent variance, physical-measure parameters, and the volatility risk
+% premium within an augmented particle filter while preserving the structural relation between the two measures. Laplace-based
+% initialization and adaptive recovery improve particle placement and robustness under changing market conditions.
+
+% Synthetic experiments show coherent cross-measure parameter recovery and accurate latent-variance reconstruction. Joint weighting yields the best aggregate recovery, although dynamic identification of the volatility risk premium remains challenging. On NSE equity and hourly cryptocurrency options, direct multi-surface calibration attains lower pure pricing error, while MCC additionally estimates the corresponding physical dynamics and volatility risk premium within a unified sequential procedure. Future work will study identification-aware transitions and guided proposals for tracking the volatility risk premium.
+
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{mcc_bib}
+
+\end{document}

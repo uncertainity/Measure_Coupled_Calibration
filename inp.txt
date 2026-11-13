@@ -1,0 +1,12 @@
+number of particles: 250
+number of volatility path samples: 150
+use ESS (1 or 0): 1
+number of threads: 16
+alpha (enter a value between 0 and 1): 0.05
+use LMS (1 or 0): 1
+
+# Only the below fields are required for baselines
+
+is daily rate (1 for daily, 0 for monthly): 1
+folder path: ./Data/Synthetic_Stock
+Output path: ./Output/Synthetic_Stock_LMS

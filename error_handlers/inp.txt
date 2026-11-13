@@ -1,0 +1,4 @@
+# Supported models: Heston, Bates
+model: Bates
+run P errors: 1
+run Q errors: 1

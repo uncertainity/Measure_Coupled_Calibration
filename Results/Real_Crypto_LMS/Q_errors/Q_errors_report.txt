@@ -1,0 +1,111 @@
+Bates LMS Q-space option-pricing error report
+=============================================
+
+Common contracts across all methods: 90
+
+Strict common-contract comparison
+         method  count  date_hours      mae  median_ae     rmse   max_ae
+baseline_single     90          23 5.712368   5.860600 6.027154 10.18340
+ baseline_multi     90          23 1.208084   0.546475 2.260299  9.94717
+     joint_eape     90          23 0.980169   0.393355 1.735788  7.67209
+     joint_mape     90          23 1.936389   1.519295 2.595829  9.80192
+
+baseline_single
+===============
+
+Overall
+               value
+count      98.000000
+date_hours 24.000000
+mae         5.511589
+median_ae   5.790645
+rmse        5.922140
+max_ae     10.183400
+
+Moneyness Metrics
+               MAE  Median AE     RMSE  count
+Moneyness                                    
+ATM       6.156991   6.223010 6.328343     55
+ITM       3.664194   2.632570 4.742960     22
+OTM       5.756616   5.255190 5.934120     21
+
+Date-Hour Metrics Summary
+                          value
+Average Date-Hour MAE  6.099321
+Median Date-Hour MAE   6.072814
+Average Date-Hour RMSE 6.307743
+
+baseline_multi
+==============
+
+Overall
+               value
+count      98.000000
+date_hours 24.000000
+mae         1.600259
+median_ae   0.652382
+rmse        2.897383
+max_ae     10.812800
+
+Moneyness Metrics
+               MAE  Median AE     RMSE  count
+Moneyness                                    
+ATM       0.827934   0.676098 1.097682     55
+ITM       4.512488   4.523775 5.758525     22
+OTM       0.572106   0.308327 1.131575     21
+
+Date-Hour Metrics Summary
+                          value
+Average Date-Hour MAE  1.386279
+Median Date-Hour MAE   0.702528
+Average Date-Hour RMSE 1.703812
+
+joint_eape
+==========
+
+Overall
+                value
+count      230.000000
+date_hours  23.000000
+mae          3.863553
+median_ae    3.090970
+rmse         5.307648
+max_ae      16.800900
+
+Moneyness Metrics
+               MAE  Median AE     RMSE  count
+Moneyness                                    
+ATM       1.486623   0.677868 2.738573     62
+ITM       5.365540   4.938710 6.402533    146
+OTM       0.594440   0.161178 1.157541     22
+
+Date-Hour Metrics Summary
+                          value
+Average Date-Hour MAE  3.863553
+Median Date-Hour MAE   3.259348
+Average Date-Hour RMSE 4.797204
+
+joint_mape
+==========
+
+Overall
+                value
+count      230.000000
+date_hours  23.000000
+mae          2.112734
+median_ae    1.529465
+rmse         2.811686
+max_ae       9.801920
+
+Moneyness Metrics
+               MAE  Median AE     RMSE  count
+Moneyness                                    
+ATM       1.829513   1.657440 2.095578     62
+ITM       2.416432   1.606135 3.233878    146
+OTM       0.895455   0.800000 0.932982     22
+
+Date-Hour Metrics Summary
+                          value
+Average Date-Hour MAE  2.112734
+Median Date-Hour MAE   1.923342
+Average Date-Hour RMSE 2.708249

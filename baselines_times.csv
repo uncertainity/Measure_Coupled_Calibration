@@ -1,0 +1,4 @@
+run_timestamp,elapsed_seconds,folder_path,output_path
+"2026-07-11 19:55:28",5040,"./Data/Real_Stock","./Output/Baseline_Stock"
+"2026-07-12 02:27:15",830,"./Data/Real_Crypto","./Output/Baseline_Crypto"
+"2026-07-12 11:56:12",7844,"./Data/Synthetic_Stock","./Output/Baseline_Synthetic_Stock"

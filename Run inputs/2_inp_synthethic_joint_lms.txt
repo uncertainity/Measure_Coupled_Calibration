@@ -1,0 +1,8 @@
+number of particles: 250
+number of volatility path samples: 150
+use ESS (1 or 0): 1
+number of threads: 8
+alpha (enter a value between 0 and 1): 0.05
+use LMS (1 or 0): 0
+folder path: ./Data/Real_Stock
+Output path: ./Output/Real_Stock

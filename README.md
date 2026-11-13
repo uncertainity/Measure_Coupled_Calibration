@@ -1,6 +1,6 @@
 # Online Measure-Coupled Calibration (MCC)
 
-This repository contains the implementation and experiments for **Measure-Coupled Calibration (MCC)**, an online framework for jointly learning stochastic-volatility dynamics from asset returns under the physical measure \(\mathbb{P}\) and option prices under the risk-neutral measure \(\mathbb{Q}\).
+This repository contains the implementation and experiments for **Measure-Coupled Calibration (MCC)**, an online framework for jointly learning stochastic-volatility dynamics from asset returns under the physical measure P and option prices under the risk-neutral measure Q.
 
 The code supports Heston and Bates models, synthetic and real-market datasets, baseline calibrations, error analysis, and the result figures used in the accompanying manuscript.
 
@@ -10,20 +10,15 @@ MCC uses a sequential augmented particle filter to update:
 
 - the latent variance path;
 - physical-measure model parameters;
-- the volatility risk premium connecting \(\mathbb{P}\) and \(\mathbb{Q}\); and
+- the volatility risk premium connecting P and Q; and
 - jump parameters for the Bates model.
 
 For the Heston variance process, the measure change is represented by
 
-$$
-\kappa_{\mathbb{Q}} = \kappa_{\mathbb{P}} + \lambda_V,
-$$
-
-$$
-\theta_{\mathbb{Q}} =
-\frac{\kappa_{\mathbb{P}}\theta_{\mathbb{P}}}
-     {\kappa_{\mathbb{Q}}}.
-$$
+```text
+kappa_Q = kappa_P + lambda_V
+theta_Q = (kappa_P * theta_P) / kappa_Q
+```
 
 At each observation time, particles are weighted using both the return likelihood and the option-surface fit. Resampling and recovery steps then propagate the posterior to the next observation.
 
@@ -166,7 +161,7 @@ Additional details about the analysis inputs and generated files are available i
 
 ![Synthetic P and Q kappa-theta recovery](figures/synthetic_pq_kappa_theta_recovery_2x2.png)
 
-*Recovery of \(\kappa\) and \(\theta\) under the physical and risk-neutral measures.*
+*Recovery of the mean-reversion rate (kappa) and long-run variance (theta) under the physical and risk-neutral measures.*
 
 ### Option-surface errors
 
